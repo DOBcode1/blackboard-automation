@@ -5,7 +5,7 @@ Blackboard Ultra assignment extractor using Playwright (sync API).
 Extracts Spring 2026 course assignments and saves them to output/assignments_<timestamp>.json.
 
 SELECTOR NOTES:
-  Selectors marked [STABLE] rely on href patterns, ARIA labels, or text content.
+  Selectors marked [STABLE] rely on href patterns or ARIA labels.
   These are unlikely to break between Blackboard SaaS updates.
 
   Selectors marked [FRAGILE] rely on class names that may change.
@@ -54,9 +54,6 @@ ASSIGNMENT_LINK_SELECTOR = "a[href*='/assignment/'], a[href*='/assessments/']"
 
 # [STABLE] Due date as a <time datetime="..."> element — gives ISO 8601 directly
 DUE_DATE_TIME_ELEMENT_SELECTOR = "time[datetime]"
-
-# [STABLE] Due date as text — "Due:" prefix is always rendered by Blackboard Ultra
-DUE_DATE_TEXT_SELECTOR = "span:has-text('Due'), div:has-text('Due')"
 
 # [FRAGILE] Due date by class name — adjust after inspecting live DOM if needed
 DUE_DATE_CLASS_SELECTOR = "[class*='due-date'], [class*='dueDate']"
@@ -421,10 +418,11 @@ class BlackboardScraper:
         print(f"    [DEBUG] {actionable_count} actionable item(s) matched ACTIONABLE_TYPES", flush=True)
         return assignments
 
-    def _extract_due_date(self, elem) -> tuple[str, str]:
+    def _extract_due_date(self, elem) -> tuple[str | None, str | None]:
         """
         Search for a due date in the element and its parent container.
-        Returns (YYYY-MM-DD or "", raw_text or "").
+        Returns (YYYY-MM-DD or None, raw_text or None).
+        Only structural selectors are used — no keyword/text-matching selectors.
         """
         try:
             parent = elem.locator("..").first
@@ -439,15 +437,7 @@ class BlackboardScraper:
         except Exception:
             pass
 
-        # 2. Text containing "Due" [STABLE]
-        try:
-            raw = parent.locator(DUE_DATE_TEXT_SELECTOR).first.inner_text().strip()
-            if raw:
-                return self._parse_due_text(raw), raw
-        except Exception:
-            pass
-
-        # 3. Class-based selector [FRAGILE]
+        # 2. Class-based selector [FRAGILE]
         try:
             raw = parent.locator(DUE_DATE_CLASS_SELECTOR).first.inner_text().strip()
             if raw:
@@ -455,18 +445,18 @@ class BlackboardScraper:
         except Exception:
             pass
 
-        return "", ""
+        return None, None
 
     # -----------------------------------------------------------------------
     # DATE UTILITIES
     # -----------------------------------------------------------------------
 
-    def _normalize_date(self, date_str: str) -> str:
+    def _normalize_date(self, date_str: str) -> str | None:
         if re.match(r"\d{4}-\d{2}-\d{2}", date_str):
             return date_str[:10]
-        return ""
+        return None
 
-    def _parse_due_text(self, text: str) -> str:
+    def _parse_due_text(self, text: str) -> str | None:
         clean = re.sub(r"^[Dd]ue:?\s*", "", text).strip()
         formats = [
             "%b %d, %Y %I:%M %p",
@@ -481,9 +471,9 @@ class BlackboardScraper:
                 return datetime.strptime(clean, fmt).strftime("%Y-%m-%d")
             except ValueError:
                 continue
-        return ""
+        return None
 
-    def _compute_status(self, due_date_str: str) -> str:
+    def _compute_status(self, due_date_str: str | None) -> str:
         if not due_date_str:
             return "unknown"
         try:
