@@ -64,6 +64,11 @@ DUE_DATE_CLASS_SELECTOR = "[class*='due-date'], [class*='dueDate']"
 # [STABLE] Confirm course outline has loaded
 OUTLINE_LOADED_SELECTOR = "main, [role='main'], [class*='outline']"
 
+# Content types that represent actionable graded work.
+# Only items whose svg[aria-label] matches one of these will be extracted.
+# Update this set if Blackboard introduces new graded item types.
+ACTIONABLE_TYPES = {"Assignment", "Test", "Quiz", "Discussion"}
+
 
 # ---------------------------------------------------------------------------
 # SCRAPER
@@ -328,17 +333,18 @@ class BlackboardScraper:
 
     def _extract_assignments(self, page: Page, course_url: str) -> list[dict]:
         """
-        Extract assignments from the course content outline page.
+        Extract actionable graded items from the course outline page.
+
+        Only items whose svg[aria-label] matches ACTIONABLE_TYPES are processed.
+        All other content (Documents, Folders, Announcements, etc.) is skipped.
 
         Confirmed DOM structure (from live Blackboard Ultra DOM):
           div.content-list-item              — one per content item [STABLE]
-          svg[aria-label="Assignment"]       — present only on assignment items [STABLE]
-          a[data-analytics-id*="assessment"] — assignment title link [STABLE]
+          svg[aria-label="..."]              — icon identifying content type [STABLE]
+          a[data-analytics-id*="assessment"] — title link for graded items [STABLE]
           a[class*="contentItemTitle"]       — title fallback [FRAGILE — hashed class]
-          div[class*="gradeDetail"]          — due date text [FRAGILE — hashed class]
-          div.js-description                 — assignment description [STABLE]
 
-        Assignments may be nested inside Learning Modules (collapsed folders).
+        Graded items may be nested inside Learning Modules (collapsed folders).
         _expand_course_content() is called first to expand everything.
         """
         print(f"    [DEBUG] URL before expand: {page.url}", flush=True)
@@ -362,14 +368,20 @@ class BlackboardScraper:
 
         assignments = []
         seen = set()
-        assignment_items_found = 0
+        actionable_count = 0
 
         for item in all_items:
             try:
-                # Only process items that have an Assignment icon [STABLE]
-                if item.locator("svg[aria-label='Assignment']").count() == 0:
+                # Determine content type from SVG icon aria-label [STABLE]
+                content_type = ""
+                svg = item.locator("svg[aria-label]").first
+                if svg.count() > 0:
+                    content_type = svg.get_attribute("aria-label") or ""
+
+                # Skip non-graded content (Documents, Folders, Announcements, etc.)
+                if content_type not in ACTIONABLE_TYPES:
                     continue
-                assignment_items_found += 1
+                actionable_count += 1
 
                 # Title — assessment link [STABLE], fall back to hashed class [FRAGILE]
                 href = ""
@@ -388,42 +400,25 @@ class BlackboardScraper:
                     continue
                 seen.add(title)
 
-                assignment_url = (
-                    f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
-                )
+                url = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
 
-                # Due date [FRAGILE — update class pattern if Blackboard updates]
-                due_date_raw = ""
-                due_elem = item.locator("div[class*='gradeDetail']").first
-                if due_elem.count() > 0:
-                    due_date_raw = due_elem.inner_text().strip()
-
-                due_date_str = ""
-                if due_date_raw and "no due date" not in due_date_raw.lower():
-                    due_date_str = self._parse_due_text(due_date_raw)
-
-                # Description [STABLE]
-                description = ""
-                desc_elem = item.locator("div.js-description").first
-                if desc_elem.count() > 0:
-                    description = desc_elem.inner_text().strip()
-
-                status = self._compute_status(due_date_str)
+                due_date, due_date_raw = self._extract_due_date(item)
+                status = self._compute_status(due_date)
 
                 assignments.append({
                     "title": title,
-                    "due_date": due_date_str,
-                    "due_datetime_raw": due_date_raw,
-                    "description": description,
-                    "url": assignment_url,
+                    "content_type": content_type,
+                    "due_date": due_date,
+                    "due_date_raw": due_date_raw,
                     "status": status,
+                    "url": url,
                 })
 
             except Exception as e:
                 print(f"    [WARN] Skipped one item: {e}")
                 continue
 
-        print(f"    [DEBUG] {assignment_items_found} item(s) matched Assignment SVG filter", flush=True)
+        print(f"    [DEBUG] {actionable_count} actionable item(s) matched ACTIONABLE_TYPES", flush=True)
         return assignments
 
     def _extract_due_date(self, elem) -> tuple[str, str]:
