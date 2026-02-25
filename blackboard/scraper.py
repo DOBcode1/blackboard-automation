@@ -359,6 +359,15 @@ class BlackboardScraper:
         all_items = page.locator("div.content-list-item").all()
         print(f"    [DEBUG] {len(all_items)} content-list-item(s) found after expand", flush=True)
 
+        # TEMP DEBUG: collect all distinct svg[aria-label] values before any filtering
+        _svg_labels_seen = set()
+        for _item in all_items:
+            _svg = _item.locator("svg[aria-label]").first
+            if _svg.count() > 0:
+                _label = _svg.get_attribute("aria-label") or ""
+                _svg_labels_seen.add(_label)
+        print(f"    [DEBUG] distinct svg[aria-label] values: {sorted(_svg_labels_seen)}", flush=True)
+
         if not all_items:
             print(f"    [INFO] No content items found on page.")
             return []
