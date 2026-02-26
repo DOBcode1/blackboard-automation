@@ -292,12 +292,12 @@ class BlackboardScraper:
         Angular re-renders the outline after each toggle, which can shift
         indices and cause pre-collected locators to misfire.
         """
-        # Step 1: Load all top-level items
-        for _ in range(10):
-            load_btn = page.locator('button[data-analytics-id*="loadMoreButton"]')
-            if load_btn.count() == 0:
+        # Step 1: Load all top-level items — only click enabled buttons
+        for _ in range(30):
+            load_btns = page.locator('button[data-analytics-id*="loadMoreButton"]:not([disabled])')
+            if load_btns.count() == 0:
                 break
-            load_btn.first.click()
+            load_btns.first.click()
             time.sleep(1.5)
 
         # Step 2: Expand collapsed Learning Modules one at a time
@@ -327,6 +327,30 @@ class BlackboardScraper:
                 except PlaywrightTimeoutError:
                     pass
                 break  # Stop expansion after recovery to avoid loop
+
+        # Step 3: Scroll to bottom until page height stabilizes
+        print("    [DEBUG] Scrolling to stabilize page height...", flush=True)
+        prev_height = -1
+        stable_count = 0
+        for _ in range(20):
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(1.5)
+            height = page.evaluate("document.body.scrollHeight")
+            if height == prev_height:
+                stable_count += 1
+                if stable_count >= 2:
+                    break
+            else:
+                stable_count = 0
+            prev_height = height
+
+        # Step 4: Re-wait for content items after scrolling, then print stabilized count
+        try:
+            page.wait_for_selector("div.content-list-item", timeout=PAGE_LOAD_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            pass
+        total = page.locator("div.content-list-item").count()
+        print(f"    [STABILIZED] div.content-list-item total: {total}", flush=True)
 
     def _extract_assignments(self, page: Page, course_url: str) -> list[dict]:
         """
@@ -384,9 +408,9 @@ class BlackboardScraper:
                 if svg.count() > 0:
                     content_type = svg.get_attribute("aria-label") or ""
 
-                # Skip non-graded content (Documents, Folders, Announcements, etc.)
-                if content_type not in ACTIONABLE_TYPES:
-                    continue
+                # STABILIZATION PHASE 1: type filtering disabled — extract everything
+                # if content_type not in ACTIONABLE_TYPES:
+                #     continue
                 actionable_count += 1
 
                 # Title — assessment link [STABLE], fall back to hashed class [FRAGILE]
@@ -401,6 +425,14 @@ class BlackboardScraper:
                     if title_link.count() > 0:
                         title = title_link.inner_text().strip()
                         href = title_link.get_attribute("href") or ""
+
+                # Generic fallback for non-graded items (Documents, Folders, etc.)
+                # which have no assessment or contentItemTitle link
+                if not title:
+                    generic = item.locator("a, [class*='title'], h3, h4").first
+                    if generic.count() > 0:
+                        title = generic.inner_text().strip()
+                        href = generic.get_attribute("href") or href
 
                 if not title or title in seen:
                     continue
