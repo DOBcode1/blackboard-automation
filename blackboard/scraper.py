@@ -332,10 +332,11 @@ class BlackboardScraper:
         print("    [DEBUG] Scrolling to stabilize page height...", flush=True)
         prev_height = -1
         stable_count = 0
-        for _ in range(20):
+        for i in range(10):
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(1.5)
             height = page.evaluate("document.body.scrollHeight")
+            print(f"    [SCROLL] iter={i} prev_height={prev_height} height={height} stable_count={stable_count}", flush=True)
             if height == prev_height:
                 stable_count += 1
                 if stable_count >= 2:
