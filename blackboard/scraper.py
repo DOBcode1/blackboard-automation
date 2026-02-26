@@ -297,7 +297,7 @@ class BlackboardScraper:
             load_btns = page.locator('button[data-analytics-id*="loadMoreButton"]:not([disabled])')
             if load_btns.count() == 0:
                 break
-            load_btns.first.click()
+            load_btns.first.click(force=True)
             time.sleep(1.5)
 
         # Step 2: Expand collapsed Learning Modules one at a time
