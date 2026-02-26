@@ -381,19 +381,58 @@ class BlackboardScraper:
             self._save_debug_html(page, "course_content_post_expand")
             self._debug_course_saved = True
 
-        all_items = page.locator("div.content-list-item").all()
-        print(f"    [DEBUG] {len(all_items)} content-list-item(s) found after expand", flush=True)
+        # Single JS round-trip: extract all item data without per-item locator calls.
+        # Mirrors the three-tier title fallback and parent-container <time> search
+        # from _extract_due_date — all in one evaluate().
+        raw_items: list[dict] = page.evaluate("""() => {
+            const items = document.querySelectorAll('div.content-list-item');
+            return Array.from(items).map(item => {
+                // content_type from svg[aria-label] [STABLE]
+                const svg = item.querySelector('svg[aria-label]');
+                const content_type = svg ? (svg.getAttribute('aria-label') || '') : '';
+
+                // title + href: assessment link [STABLE] → contentItemTitle [FRAGILE] → generic
+                let title = '';
+                let href  = '';
+
+                const assessmentLink = item.querySelector('a[data-analytics-id*="assessment"]');
+                if (assessmentLink) {
+                    title = (assessmentLink.textContent || '').trim();
+                    href  = assessmentLink.getAttribute('href') || '';
+                }
+
+                if (!title) {
+                    const titleLink = item.querySelector('a[class*="contentItemTitle"]');
+                    if (titleLink) {
+                        title = (titleLink.textContent || '').trim();
+                        href  = titleLink.getAttribute('href') || '';
+                    }
+                }
+
+                if (!title) {
+                    const generic = item.querySelector('a, [class*="title"], h3, h4');
+                    if (generic) {
+                        title = (generic.textContent || '').trim();
+                        href  = generic.getAttribute('href') || href;
+                    }
+                }
+
+                // due date: search parent container first (mirrors _extract_due_date) [STABLE]
+                const searchRoot = item.parentElement || item;
+                const timeEl = searchRoot.querySelector('time[datetime]');
+                const time_datetime = timeEl ? (timeEl.getAttribute('datetime') || '') : '';
+
+                return { content_type, title, href, time_datetime };
+            });
+        }""")
+
+        print(f"    [DEBUG] {len(raw_items)} content-list-item(s) found after expand", flush=True)
 
         # TEMP DEBUG: collect all distinct svg[aria-label] values before any filtering
-        _svg_labels_seen = set()
-        for _item in all_items:
-            _svg = _item.locator("svg[aria-label]").first
-            if _svg.count() > 0:
-                _label = _svg.get_attribute("aria-label", timeout=2000) or ""
-                _svg_labels_seen.add(_label)
+        _svg_labels_seen = {d['content_type'] for d in raw_items if d['content_type']}
         print(f"    [DEBUG] distinct svg[aria-label] values: {sorted(_svg_labels_seen)}", flush=True)
 
-        if not all_items:
+        if not raw_items:
             print(f"    [INFO] No content items found on page.")
             return []
 
@@ -401,39 +440,16 @@ class BlackboardScraper:
         seen = set()
         actionable_count = 0
 
-        for idx, item in enumerate(all_items):
+        for idx, item in enumerate(raw_items):
             try:
-                # Determine content type from SVG icon aria-label [STABLE]
-                content_type = ""
-                svg = item.locator("svg[aria-label]").first
-                if svg.count() > 0:
-                    content_type = svg.get_attribute("aria-label", timeout=2000) or ""
+                content_type = item['content_type']
+                title        = item['title']
+                href         = item['href']
 
                 # STABILIZATION PHASE 1: type filtering disabled — extract everything
                 # if content_type not in ACTIONABLE_TYPES:
                 #     continue
                 actionable_count += 1
-
-                # Title — assessment link [STABLE], fall back to hashed class [FRAGILE]
-                href = ""
-                title = ""
-                title_link = item.locator("a[data-analytics-id*='assessment']").first
-                if title_link.count() > 0:
-                    title = title_link.inner_text(timeout=2000).strip()
-                    href = title_link.get_attribute("href", timeout=2000) or ""
-                if not title:
-                    title_link = item.locator("a[class*='contentItemTitle']").first
-                    if title_link.count() > 0:
-                        title = title_link.inner_text(timeout=2000).strip()
-                        href = title_link.get_attribute("href", timeout=2000) or ""
-
-                # Generic fallback for non-graded items (Documents, Folders, etc.)
-                # which have no assessment or contentItemTitle link
-                if not title:
-                    generic = item.locator("a, [class*='title'], h3, h4").first
-                    if generic.count() > 0:
-                        title = generic.inner_text(timeout=2000).strip()
-                        href = generic.get_attribute("href", timeout=2000) or href
 
                 if idx < 10:
                     print(f"    [DEBUG] item[{idx}] content_type={content_type!r} title={title!r}", flush=True)
@@ -444,16 +460,18 @@ class BlackboardScraper:
 
                 url = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
 
-                due_date, due_date_raw = self._extract_due_date(item)
-                status = self._compute_status(due_date)
+                time_datetime = item['time_datetime']
+                due_date      = self._normalize_date(time_datetime) if time_datetime else None
+                due_date_raw  = time_datetime or None
+                status        = self._compute_status(due_date)
 
                 assignments.append({
-                    "title": title,
+                    "title":        title,
                     "content_type": content_type,
-                    "due_date": due_date,
+                    "due_date":     due_date,
                     "due_date_raw": due_date_raw,
-                    "status": status,
-                    "url": url,
+                    "status":       status,
+                    "url":          url,
                 })
 
             except Exception as e:
