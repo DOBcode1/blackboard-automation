@@ -401,7 +401,7 @@ class BlackboardScraper:
         seen = set()
         actionable_count = 0
 
-        for item in all_items:
+        for idx, item in enumerate(all_items):
             try:
                 # Determine content type from SVG icon aria-label [STABLE]
                 content_type = ""
@@ -434,6 +434,9 @@ class BlackboardScraper:
                     if generic.count() > 0:
                         title = generic.inner_text().strip()
                         href = generic.get_attribute("href") or href
+
+                if idx < 10:
+                    print(f"    [DEBUG] item[{idx}] content_type={content_type!r} title={title!r}", flush=True)
 
                 if not title or title in seen:
                     continue
