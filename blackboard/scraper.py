@@ -389,7 +389,7 @@ class BlackboardScraper:
         for _item in all_items:
             _svg = _item.locator("svg[aria-label]").first
             if _svg.count() > 0:
-                _label = _svg.get_attribute("aria-label") or ""
+                _label = _svg.get_attribute("aria-label", timeout=2000) or ""
                 _svg_labels_seen.add(_label)
         print(f"    [DEBUG] distinct svg[aria-label] values: {sorted(_svg_labels_seen)}", flush=True)
 
@@ -407,7 +407,7 @@ class BlackboardScraper:
                 content_type = ""
                 svg = item.locator("svg[aria-label]").first
                 if svg.count() > 0:
-                    content_type = svg.get_attribute("aria-label") or ""
+                    content_type = svg.get_attribute("aria-label", timeout=2000) or ""
 
                 # STABILIZATION PHASE 1: type filtering disabled — extract everything
                 # if content_type not in ACTIONABLE_TYPES:
@@ -419,21 +419,21 @@ class BlackboardScraper:
                 title = ""
                 title_link = item.locator("a[data-analytics-id*='assessment']").first
                 if title_link.count() > 0:
-                    title = title_link.inner_text().strip()
-                    href = title_link.get_attribute("href") or ""
+                    title = title_link.inner_text(timeout=2000).strip()
+                    href = title_link.get_attribute("href", timeout=2000) or ""
                 if not title:
                     title_link = item.locator("a[class*='contentItemTitle']").first
                     if title_link.count() > 0:
-                        title = title_link.inner_text().strip()
-                        href = title_link.get_attribute("href") or ""
+                        title = title_link.inner_text(timeout=2000).strip()
+                        href = title_link.get_attribute("href", timeout=2000) or ""
 
                 # Generic fallback for non-graded items (Documents, Folders, etc.)
                 # which have no assessment or contentItemTitle link
                 if not title:
                     generic = item.locator("a, [class*='title'], h3, h4").first
                     if generic.count() > 0:
-                        title = generic.inner_text().strip()
-                        href = generic.get_attribute("href") or href
+                        title = generic.inner_text(timeout=2000).strip()
+                        href = generic.get_attribute("href", timeout=2000) or href
 
                 if idx < 10:
                     print(f"    [DEBUG] item[{idx}] content_type={content_type!r} title={title!r}", flush=True)
