@@ -332,10 +332,22 @@ class BlackboardScraper:
         print("    [DEBUG] Scrolling to stabilize page height...", flush=True)
         prev_height = -1
         stable_count = 0
-        for i in range(10):
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        for i in range(20):
+            page.evaluate("""
+() => {
+    const main = document.querySelector('[role="main"]') || document.querySelector('main');
+    if (main) {
+        main.scrollBy(0, 1000);
+    }
+}
+""")
             time.sleep(1.5)
-            height = page.evaluate("document.body.scrollHeight")
+            height = page.evaluate("""
+() => {
+    const main = document.querySelector('[role="main"]') || document.querySelector('main');
+    return main ? main.scrollHeight : document.body.scrollHeight;
+}
+""")
             print(f"    [SCROLL] iter={i} prev_height={prev_height} height={height} stable_count={stable_count}", flush=True)
             if height == prev_height:
                 stable_count += 1
