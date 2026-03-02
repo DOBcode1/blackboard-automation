@@ -98,6 +98,39 @@ class BlackboardScraper:
                 print(f"\nNavigating to courses page...")
                 page.goto(COURSES_PAGE_URL, wait_until="networkidle")
 
+                # Gate: block until the Spring 2026 term group is in the DOM.
+                # This ensures React has rendered term cards before any scrolling.
+                page.wait_for_selector(
+                    f".course-card-term-name:has-text('{TERM_FILTER}')",
+                    timeout=PAGE_LOAD_TIMEOUT_MS,
+                )
+                print(f"[OK] '{TERM_FILTER}' term group detected.")
+
+                page.evaluate("""
+() => {
+    const container = document.getElementById('main-content-inner');
+    if (!container) return;
+
+    const step = 300;
+    let current = 0;
+
+    function scrollStep() {
+        current += step;
+        container.scrollTop = current;
+
+        if (current < container.scrollHeight) {
+            setTimeout(scrollStep, 50);
+        }
+    }
+
+    scrollStep();
+}
+""")
+                time.sleep(3)
+
+                total_cards = page.locator("a[href*='/ultra/courses/']").count()
+                print(f"[COURSES STABILIZED] total course cards visible: {total_cards}")
+
                 course_links = self._get_spring_2026_course_links(page)
                 if not course_links:
                     print(f"[WARN] No '{TERM_FILTER}' courses found. "
@@ -157,20 +190,12 @@ class BlackboardScraper:
 
     def _get_spring_2026_course_links(self, page: Page) -> list[dict]:
         """
-        Find Spring 2026 courses using DOM selectors.
-
-        Blackboard Ultra's courses page uses a Slick carousel with one slide per
-        term. Only the current/active slide renders DOM. Within the active slide,
-        courses are grouped by term with a visible <h3> heading.
-
-        Structure (confirmed from live DOM):
-          div#course-card-term-name-{termId}  → contains <h3>Spring 2026</h3>
-          div.default-group.term-{termId}     → contains the course article cards
-          article[data-course-id]             → one per course
-          h4.js-course-title-element          → course name
+        Find Spring 2026 courses by scanning all article[data-course-id] elements
+        and filtering by TERM_FILTER in JS.
         """
         try:
-            page.wait_for_selector("article[data-course-id]", timeout=PAGE_LOAD_TIMEOUT_MS)
+            page.wait_for_selector("article[data-course-id]",
+                                   timeout=PAGE_LOAD_TIMEOUT_MS)
         except PlaywrightTimeoutError:
             print("[WARN] Course list did not load. Saving debug HTML.")
             self._save_debug_html(page, "courses_page")
@@ -178,44 +203,39 @@ class BlackboardScraper:
 
         time.sleep(2)
 
-        # Extract the term ID for Spring 2026 from the term group heading element
-        term_id = page.evaluate(f"""() => {{
-            const headings = document.querySelectorAll('.course-card-term-name');
-            for (const el of headings) {{
-                if (el.textContent.includes('{TERM_FILTER}')) {{
-                    const match = el.id.match(/course-card-term-name-(.+)/);
-                    return match ? match[1] : null;
-                }}
-            }}
-            return null;
+        # Force hydration of lazy-rendered course cards
+        page.evaluate("""
+() => {
+    const cards = document.querySelectorAll('article[data-course-id]');
+    cards.forEach(card => {
+        card.scrollIntoView({ block: 'center' });
+    });
+}
+""")
+        time.sleep(2)
+
+        articles_data: list[dict] = page.evaluate(f"""() => {{
+            const TERM = '{TERM_FILTER}';
+            return Array.from(document.querySelectorAll('article[data-course-id]'))
+                .map(card => {{
+                    const id = card.getAttribute('data-course-id') || '';
+                    const h4 = card.querySelector('h4.js-course-title-element');
+                    const name = h4 ? h4.textContent.trim() : id;
+                    return {{ course_id: id, course_name: name || id }};
+                }})
+                .filter(c => c.course_id && c.course_name.includes(TERM));
         }}""")
 
-        if term_id:
-            print(f"[OK] Found '{TERM_FILTER}' term group (ID: {term_id}).")
-            selector = f".term-{term_id} article[data-course-id]:not([data-course-id=''])"
-        else:
-            # Fallback: grab all non-empty course articles visible on the page
-            print(f"[INFO] '{TERM_FILTER}' term heading not found. "
-                  "Collecting all visible active courses.")
-            selector = "article[data-course-id]:not([data-course-id=''])"
+        print(f"[OK] Found {len(articles_data)} article(s) matching '{TERM_FILTER}'.")
 
-        articles = page.locator(selector).all()
-        courses = []
-        for article in articles:
-            course_id = article.get_attribute("data-course-id") or ""
-            if not course_id:
-                continue
-            try:
-                name = article.locator("h4.js-course-title-element").first.inner_text().strip()
-            except Exception:
-                name = course_id
-            courses.append({
-                "course_id": course_id,
-                "course_name": name or course_id,
-                "url": f"{BASE_URL}/ultra/courses/{course_id}/cl/outline",
-            })
-
-        return courses
+        return [
+            {
+                "course_id":   ad["course_id"],
+                "course_name": ad["course_name"],
+                "url":         f"{BASE_URL}/ultra/courses/{ad['course_id']}/cl/outline",
+            }
+            for ad in articles_data
+        ]
 
     def _parse_course_link(self, link) -> dict | None:
         href = link.get_attribute("href") or ""
@@ -292,6 +312,10 @@ class BlackboardScraper:
         Angular re-renders the outline after each toggle, which can shift
         indices and cause pre-collected locators to misfire.
         """
+        for _ in range(15):
+            page.mouse.wheel(0, 500)
+            time.sleep(0.2)
+
         # Step 1: Load all top-level items — only click enabled buttons
         for _ in range(30):
             load_btns = page.locator('button[data-analytics-id*="loadMoreButton"]:not([disabled])')
