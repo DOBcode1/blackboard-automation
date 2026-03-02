@@ -106,40 +106,57 @@ class BlackboardScraper:
                 )
                 print(f"[OK] '{TERM_FILTER}' term group detected.")
 
-                page.evaluate("""
+                collected_course_ids = set()
+
+                container = page.locator("#main-content-inner")
+                container.hover()
+
+                for _ in range(40):
+                    page.mouse.wheel(0, 500)
+                    time.sleep(0.2)
+
+                    ids = page.locator("article[data-course-id]").evaluate_all(
+                        "els => els.map(e => e.getAttribute('data-course-id'))"
+                    )
+
+                    collected_course_ids.update([i for i in ids if i])
+
+                print(f"[DEBUG] Total unique course IDs collected during scroll: {len(collected_course_ids)}")
+
+                articles_data = page.evaluate("""
 () => {
-    const container = document.getElementById('main-content-inner');
-    if (!container) return;
-
-    const step = 300;
-    let current = 0;
-
-    function scrollStep() {
-        current += step;
-        container.scrollTop = current;
-
-        if (current < container.scrollHeight) {
-            setTimeout(scrollStep, 50);
-        }
-    }
-
-    scrollStep();
+    return Array.from(document.querySelectorAll('article[data-course-id]'))
+        .map(card => {
+            const id = card.getAttribute('data-course-id') || '';
+            const h4 = card.querySelector('h4.js-course-title-element');
+            const name = h4 ? h4.textContent.trim() : id;
+            return { course_id: id, course_name: name || id };
+        });
 }
 """)
-                time.sleep(3)
 
-                total_cards = page.locator("a[href*='/ultra/courses/']").count()
-                print(f"[COURSES STABILIZED] total course cards visible: {total_cards}")
+                spring_courses = [
+                    c for c in articles_data
+                    if c["course_id"] and "Spring 2026" in c["course_name"]
+                ]
 
-                course_links = self._get_spring_2026_course_links(page)
+                course_links = [
+                    {
+                        "course_id": c["course_id"],
+                        "course_name": c["course_name"],
+                        "url": f"{BASE_URL}/ultra/courses/{c['course_id']}/cl/outline"
+                    }
+                    for c in spring_courses
+                ]
+
+                print(f"Found {len(course_links)} {TERM_FILTER} course(s).\n")
+
                 if not course_links:
                     print(f"[WARN] No '{TERM_FILTER}' courses found. "
                           "The term section selector may need adjustment — "
                           "inspect the institution page in DevTools and update "
                           "TERM_SECTION_SELECTOR in scraper.py.")
                     return
-
-                print(f"Found {len(course_links)} {TERM_FILTER} course(s).\n")
 
                 self.results["extracted_at"] = datetime.now(timezone.utc).strftime(
                     "%Y-%m-%dT%H:%M:%SZ"
@@ -214,19 +231,22 @@ class BlackboardScraper:
 """)
         time.sleep(2)
 
-        articles_data: list[dict] = page.evaluate(f"""() => {{
-            const TERM = '{TERM_FILTER}';
-            return Array.from(document.querySelectorAll('article[data-course-id]'))
-                .map(card => {{
-                    const id = card.getAttribute('data-course-id') || '';
-                    const h4 = card.querySelector('h4.js-course-title-element');
-                    const name = h4 ? h4.textContent.trim() : id;
-                    return {{ course_id: id, course_name: name || id }};
-                }})
-                .filter(c => c.course_id && c.course_name.includes(TERM));
-        }}""")
+        articles_data = page.evaluate("""
+() => {
+    return Array.from(document.querySelectorAll('article[data-course-id]'))
+        .map(card => {
+            const id = card.getAttribute('data-course-id') || '';
+            const h4 = card.querySelector('h4.js-course-title-element');
+            const name = h4 ? h4.textContent.trim() : id;
+            return { course_id: id, course_name: name || id };
+        })
+        .filter(c => c.course_id);
+}
+""")
 
-        print(f"[OK] Found {len(articles_data)} article(s) matching '{TERM_FILTER}'.")
+        print(f"[DEBUG] Total article[data-course-id] found (no term filter): {len(articles_data)}")
+        for i, c in enumerate(articles_data):
+            print(f"[DEBUG]   [{i}] {c['course_name']}")
 
         return [
             {
