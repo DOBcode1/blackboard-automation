@@ -90,10 +90,7 @@ class BlackboardScraper:
             page = browser.new_page()
 
             try:
-                print(f"Opening {LOGIN_URL} ...")
-                page.goto(LOGIN_URL, wait_until="domcontentloaded")
-
-                self._wait_for_login(page)
+                self._login(page)
 
                 print(f"\nNavigating to courses page...")
                 page.goto(COURSES_PAGE_URL, wait_until="networkidle")
@@ -182,12 +179,16 @@ class BlackboardScraper:
     # LOGIN
     # -----------------------------------------------------------------------
 
-    def _wait_for_login(self, page: Page):
-        """
-        Poll page.url every 2s for up to 3 minutes, waiting for '/ultra/' to appear.
-        This is robust to Fordham's SSO/SAML redirect chain — only the final
-        post-login URL matters.
-        """
+    def _login(self, page: Page):
+        """Navigate to the login page and wait for manual SSO completion."""
+        print(f"Opening {LOGIN_URL} ...")
+        page.goto(LOGIN_URL, wait_until="domcontentloaded")
+
+        # Fast-path: session cookie still active, already on /ultra/
+        if "/ultra/" in page.url:
+            print("[OK] Already logged in.")
+            return
+
         print(f"Waiting for manual login (up to {LOGIN_TIMEOUT_SECONDS}s)...")
         print("Please complete the login process in the browser window.\n")
 
