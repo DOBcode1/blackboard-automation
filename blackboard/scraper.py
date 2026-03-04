@@ -103,38 +103,57 @@ class BlackboardScraper:
                 )
                 print(f"[OK] '{TERM_FILTER}' term group detected.")
 
-                collected_course_ids = set()
+                # Harvested during scrolling: id -> name (dict keys are the dedup set).
+                # setdefault keeps the first-seen name for each ID.
+                course_snapshot: dict[str, str] = {}
+                prev_height   = -1
+                prev_count    = -1
+                stable_rounds = 0
 
-                container = page.locator("#main-content-inner")
-                container.hover()
-
-                for _ in range(40):
-                    page.mouse.wheel(0, 500)
-                    time.sleep(0.2)
-
-                    ids = page.locator("article[data-course-id]").evaluate_all(
-                        "els => els.map(e => e.getAttribute('data-course-id'))"
-                    )
-
-                    collected_course_ids.update([i for i in ids if i])
-
-                print(f"[DEBUG] Total unique course IDs collected during scroll: {len(collected_course_ids)}")
-
-                articles_data = page.evaluate("""
+                while True:
+                    # Advance incrementally so each virtualized window mounts.
+                    current_height = page.evaluate("""
 () => {
-    return Array.from(document.querySelectorAll('article[data-course-id]'))
-        .map(card => {
-            const id = card.getAttribute('data-course-id') || '';
-            const h4 = card.querySelector('h4.js-course-title-element');
-            const name = h4 ? h4.textContent.trim() : id;
-            return { course_id: id, course_name: name || id };
-        });
+    const c = document.querySelector('#main-content-inner');
+    if (c) c.scrollTop = Math.min(c.scrollTop + 600, c.scrollHeight);
+    return c ? c.scrollHeight : 0;
 }
 """)
+                    time.sleep(0.5)  # allow React to mount newly visible items
+
+                    # Harvest whatever is currently mounted; names captured here
+                    # so we never need a post-scroll DOM re-query.
+                    harvested = page.evaluate("""
+() => Array.from(document.querySelectorAll('article[data-course-id]')).map(card => {
+    const id   = card.getAttribute('data-course-id') || '';
+    const h4   = card.querySelector('h4.js-course-title-element');
+    return { id, name: (h4 ? h4.textContent.trim() : '') || id };
+})
+""")
+                    for item in harvested:
+                        if item['id']:
+                            course_snapshot.setdefault(item['id'], item['name'])
+
+                    height_stable = current_height == prev_height
+                    ids_stable    = len(course_snapshot) == prev_count
+
+                    if height_stable and ids_stable:
+                        stable_rounds += 1
+                    else:
+                        stable_rounds = 0
+
+                    prev_height = current_height
+                    prev_count  = len(course_snapshot)
+
+                    if stable_rounds >= 3:
+                        break
+
+                print(f"[DEBUG] Total unique course IDs collected during scroll: {len(course_snapshot)}")
 
                 spring_courses = [
-                    c for c in articles_data
-                    if c["course_id"] and "Spring 2026" in c["course_name"]
+                    {"course_id": cid, "course_name": cname}
+                    for cid, cname in course_snapshot.items()
+                    if cname and TERM_FILTER in cname
                 ]
 
                 course_links = [
