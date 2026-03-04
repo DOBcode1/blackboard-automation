@@ -112,13 +112,18 @@ class BlackboardScraper:
 
                 while True:
                     # Advance incrementally so each virtualized window mounts.
-                    current_height = page.evaluate("""
+                    scroll_result = page.evaluate("""
 () => {
     const c = document.querySelector('#main-content-inner');
     if (c) c.scrollTop = Math.min(c.scrollTop + 600, c.scrollHeight);
-    return c ? c.scrollHeight : 0;
+    return c ? {
+        scrollHeight: c.scrollHeight,
+        atBottom: c.scrollTop + c.clientHeight >= c.scrollHeight
+    } : { scrollHeight: 0, atBottom: true };
 }
 """)
+                    current_height = scroll_result['scrollHeight']
+                    at_bottom      = scroll_result['atBottom']
                     time.sleep(0.5)  # allow React to mount newly visible items
 
                     # Harvest whatever is currently mounted; names captured here
@@ -137,7 +142,7 @@ class BlackboardScraper:
                     height_stable = current_height == prev_height
                     ids_stable    = len(course_snapshot) == prev_count
 
-                    if height_stable and ids_stable:
+                    if height_stable and ids_stable and at_bottom:
                         stable_rounds += 1
                     else:
                         stable_rounds = 0
