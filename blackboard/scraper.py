@@ -316,18 +316,20 @@ class BlackboardScraper:
         }
 
         try:
-            page.goto(content_url, wait_until="domcontentloaded", timeout=30_000)
+            self._open_course_outline(page, content_url)
+            self._load_all_hidden_items(page)
+            self._expand_all_modules(page, content_url)
+            self._stabilize_course_page(page)
 
-            # Wait for the React content list to render inside the Angular view.
-            # [ui-view="course@"] * fires too early (Angular mounts before React renders
-            # the content list). Waiting for div.content-list-item is more reliable.
-            try:
-                page.wait_for_selector('div.content-list-item', timeout=PAGE_LOAD_TIMEOUT_MS)
-            except PlaywrightTimeoutError:
-                # Course may genuinely have no content items — proceed and scan anyway
-                print(f"    [INFO] No content-list-item appeared within timeout (empty course?).")
+            # Save post-expansion HTML for the first course to aid debugging
+            if not self._debug_course_saved:
+                self._save_debug_html(page, "course_content_post_expand")
+                self._debug_course_saved = True
 
-            assignments = self._extract_assignments(page, content_url)
+            print(f"    [DEBUG] URL after expand:  {page.url}", flush=True)
+
+            raw_items = self._extract_modules_and_items(page)
+            assignments = self._extract_assignments(content_url, raw_items)
             course_data["assignments"] = assignments
             course_data["assignment_count"] = len(assignments)
 
@@ -342,26 +344,38 @@ class BlackboardScraper:
         return course_data
 
     # -----------------------------------------------------------------------
-    # ASSIGNMENT EXTRACTION
+    # COURSE PAGE HELPERS
     # -----------------------------------------------------------------------
 
-    def _expand_course_content(self, page: Page, course_url: str = ""):
-        """
-        Fully expand the course outline by:
-          1. Clicking 'Load more' to reveal all top-level items.
-          2. Clicking collapsed Learning Module buttons one-at-a-time to reveal
-             their children (re-queries DOM after each click so stale locators
-             are never used).
+    def _open_course_outline(self, page: Page, course_url: str):
+        """Navigate to the course outline URL and wait for the content list to render."""
+        page.goto(course_url, wait_until="domcontentloaded", timeout=30_000)
 
-        Clicks are made one at a time rather than batching via .all() because
-        Angular re-renders the outline after each toggle, which can shift
-        indices and cause pre-collected locators to misfire.
+        # Wait for the React content list to render inside the Angular view.
+        # [ui-view="course@"] * fires too early (Angular mounts before React renders
+        # the content list). Waiting for div.content-list-item is more reliable.
+        try:
+            page.wait_for_selector('div.content-list-item', timeout=PAGE_LOAD_TIMEOUT_MS)
+        except PlaywrightTimeoutError:
+            # Course may genuinely have no content items — proceed and scan anyway
+            print(f"    [INFO] No content-list-item appeared within timeout (empty course?).")
+
+        print(f"    [DEBUG] URL before expand: {page.url}", flush=True)
+
+    def _load_all_hidden_items(self, page: Page):
+        """
+        Scroll to trigger lazy rendering, then click all 'Load more' buttons
+        until no enabled ones remain.
+
+        An initial wheel scroll is needed to force React to mount items that
+        are below the visible fold before the load-more buttons appear.
+        Clicks are serialized (one at a time) because Angular re-renders the
+        list after each click, which invalidates pre-collected locators.
         """
         for _ in range(15):
             page.mouse.wheel(0, 500)
             time.sleep(0.2)
 
-        # Step 1: Load all top-level items — only click enabled buttons
         for _ in range(30):
             load_btns = page.locator('button[data-analytics-id*="loadMoreButton"]:not([disabled])')
             if load_btns.count() == 0:
@@ -369,9 +383,15 @@ class BlackboardScraper:
             load_btns.first.click(force=True)
             time.sleep(1.5)
 
-        # Step 2: Expand collapsed Learning Modules one at a time
+    def _expand_all_modules(self, page: Page, course_url: str):
+        """
+        Click every collapsed Learning Module toggle one at a time until none remain.
+
+        Re-queries the DOM before each click so stale locators are never used.
+        If a click accidentally navigates away from the outline, the method
+        returns to the course URL and stops expanding to avoid an infinite loop.
+        """
         for attempt in range(30):  # higher cap for deeply nested modules
-            # Re-query every iteration so we always use a fresh locator
             collapsed = page.locator(
                 'button[data-analytics-id="course.learning.module.base.item.toggleLm.button"]'
                 '[aria-expanded="false"]'
@@ -397,7 +417,14 @@ class BlackboardScraper:
                     pass
                 break  # Stop expansion after recovery to avoid loop
 
-        # Step 3: Scroll to bottom until page height stabilizes
+    def _stabilize_course_page(self, page: Page):
+        """
+        Scroll the main content area repeatedly until its scrollHeight stops
+        growing, then confirm the content list is present and log its item count.
+
+        Two consecutive rounds with the same height are required before stopping,
+        to guard against Blackboard's deferred rendering of module children.
+        """
         print("    [DEBUG] Scrolling to stabilize page height...", flush=True)
         prev_height = -1
         stable_count = 0
@@ -426,7 +453,6 @@ class BlackboardScraper:
                 stable_count = 0
             prev_height = height
 
-        # Step 4: Re-wait for content items after scrolling, then print stabilized count
         try:
             page.wait_for_selector("div.content-list-item", timeout=PAGE_LOAD_TIMEOUT_MS)
         except PlaywrightTimeoutError:
@@ -434,37 +460,17 @@ class BlackboardScraper:
         total = page.locator("div.content-list-item").count()
         print(f"    [STABILIZED] div.content-list-item total: {total}", flush=True)
 
-    def _extract_assignments(self, page: Page, course_url: str) -> list[dict]:
+    def _extract_modules_and_items(self, page: Page) -> list[dict]:
         """
-        Extract actionable graded items from the course outline page.
-
-        Only items whose svg[aria-label] matches ACTIONABLE_TYPES are processed.
-        All other content (Documents, Folders, Announcements, etc.) is skipped.
+        Single JS round-trip that reads all div.content-list-item elements and
+        returns their raw data (content type, title, href, due-date datetime).
 
         Confirmed DOM structure (from live Blackboard Ultra DOM):
           div.content-list-item              — one per content item [STABLE]
           svg[aria-label="..."]              — icon identifying content type [STABLE]
           a[data-analytics-id*="assessment"] — title link for graded items [STABLE]
           a[class*="contentItemTitle"]       — title fallback [FRAGILE — hashed class]
-
-        Graded items may be nested inside Learning Modules (collapsed folders).
-        _expand_course_content() is called first to expand everything.
         """
-        print(f"    [DEBUG] URL before expand: {page.url}", flush=True)
-
-        # Expand all Learning Modules and load all items before scanning
-        self._expand_course_content(page, course_url)
-
-        print(f"    [DEBUG] URL after expand:  {page.url}", flush=True)
-
-        # Save post-expansion HTML for the first course to aid debugging
-        if not self._debug_course_saved:
-            self._save_debug_html(page, "course_content_post_expand")
-            self._debug_course_saved = True
-
-        # Single JS round-trip: extract all item data without per-item locator calls.
-        # Mirrors the three-tier title fallback and parent-container <time> search
-        # from _extract_due_date — all in one evaluate().
         raw_items: list[dict] = page.evaluate("""() => {
             const items = document.querySelectorAll('div.content-list-item');
             return Array.from(items).map(item => {
@@ -513,6 +519,20 @@ class BlackboardScraper:
         _svg_labels_seen = {d['content_type'] for d in raw_items if d['content_type']}
         print(f"    [DEBUG] distinct svg[aria-label] values: {sorted(_svg_labels_seen)}", flush=True)
 
+        return raw_items
+
+    # -----------------------------------------------------------------------
+    # ASSIGNMENT EXTRACTION
+    # -----------------------------------------------------------------------
+
+    def _extract_assignments(self, course_url: str, raw_items: list[dict]) -> list[dict]:
+        """
+        Convert raw DOM items returned by _extract_modules_and_items into
+        structured assignment dicts, deduplicating by title.
+
+        Only items whose svg[aria-label] matches ACTIONABLE_TYPES are processed.
+        All other content (Documents, Folders, Announcements, etc.) is skipped.
+        """
         if not raw_items:
             print(f"    [INFO] No content items found on page.")
             return []
