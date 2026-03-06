@@ -389,39 +389,51 @@ class BlackboardScraper:
 
         Re-queries the DOM before each click so stale locators are never used.
         If a click accidentally navigates away from the outline, the method
-        returns to the course URL and stops expanding to avoid an infinite loop.
+        returns to the course URL and continues expanding remaining toggles.
+        A recovery counter caps retries to avoid an infinite loop.
 
-        NOTE: The folder toggle selector follows the same naming convention as
-        the learning module toggle. Verify against a live course with Folders
-        in DevTools if it stops working after a Blackboard update.
+        Selector is scoped to buttons inside div.content-list-item so that
+        unrelated UI buttons (navigation, filters, etc.) are never matched.
+        aria-expanded="false" is the canonical collapsed indicator in BB Ultra
+        for both Learning Modules and Folders.
         """
-        # Select any collapsed toggle button regardless of data-analytics-id.
-        # aria-expanded="false" is the canonical indicator that a container is
-        # collapsed in Blackboard Ultra, covering both Learning Modules and Folders.
-        COLLAPSED_TOGGLE_SELECTOR = 'button[aria-expanded="false"]'
+        # Scoped to content-list-item so only expand/collapse toggles are matched,
+        # not unrelated buttons elsewhere on the page that could trigger navigation.
+        COLLAPSED_TOGGLE_SELECTOR = 'div.content-list-item button[aria-expanded="false"]'
+        MAX_NAV_RECOVERIES = 5
 
-        for attempt in range(30):  # higher cap for deeply nested modules
+        nav_recoveries = 0
+
+        for attempt in range(50):  # higher cap for deeply nested modules/folders
             collapsed = page.locator(COLLAPSED_TOGGLE_SELECTOR)
             count = collapsed.count()
             if count == 0:
                 break
-            print(f"    [DEBUG] Expanding {count} collapsed module/folder toggle(s), attempt {attempt + 1}...", flush=True)
+            print(f"    [DEBUG] Expanding collapsed module/folder toggle(s) ({count} visible), attempt {attempt + 1}...", flush=True)
             try:
                 collapsed.first.click()
-                time.sleep(1)
+                time.sleep(1.5)  # allow lazy content inside folder/LM to load
             except Exception as e:
                 print(f"    [WARN] Could not click module/folder toggle: {e}", flush=True)
                 break
 
             # Safety: if the click navigated away, go back to course outline
             if course_url and not page.url.rstrip("/").endswith("/outline"):
-                print(f"    [WARN] Navigation detected during expansion ({page.url}), returning to outline...", flush=True)
+                nav_recoveries += 1
+                print(
+                    f"    [WARN] Navigation detected during expansion ({page.url}), "
+                    f"returning to outline (recovery {nav_recoveries}/{MAX_NAV_RECOVERIES})...",
+                    flush=True,
+                )
                 page.goto(course_url, wait_until="domcontentloaded", timeout=30_000)
                 try:
-                    page.wait_for_selector('[ui-view="course@"] *', timeout=PAGE_LOAD_TIMEOUT_MS)
+                    page.wait_for_selector("div.content-list-item", timeout=PAGE_LOAD_TIMEOUT_MS)
                 except PlaywrightTimeoutError:
                     pass
-                break  # Stop expansion after recovery to avoid loop
+                if nav_recoveries >= MAX_NAV_RECOVERIES:
+                    print("    [WARN] Too many navigation events during expansion, stopping.", flush=True)
+                    break
+                # Continue the loop — more collapsed toggles may remain after recovery
 
     def _stabilize_course_page(self, page: Page):
         """
