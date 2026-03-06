@@ -7,7 +7,7 @@ output/content_objects_<timestamp>.json.
 
 Phase 1: Course discovery + virtualization scroll harvesting (unchanged).
 Phase 2: All course items are captured as structured content objects with
-         course name, course id, module name, title, content type, url,
+         course name, course id, container name, title, content type, url,
          and due date. No filtering or interpretation is applied here.
 
 SELECTOR NOTES:
@@ -508,10 +508,12 @@ class BlackboardScraper:
                 const timeEl = searchRoot.querySelector('time[datetime]');
                 const time_datetime = timeEl ? (timeEl.getAttribute('datetime') || '') : '';
 
-                // parent_module: walk up ancestors to find a containing content-list-item
-                // that represents a Learning Module or Folder (best-effort, [FRAGILE]).
-                // Returns empty string if this item is at the top level.
-                let parent_module = '';
+                // parent_container: walk up ancestors to find the nearest content-list-item
+                // whose type is exactly "Learning Module" or "Folder" (best-effort, [FRAGILE]).
+                // Non-container ancestors (Text Document, PDF, Link, etc.) are skipped so
+                // only real expandable containers are used.
+                // Returns empty string if no valid container ancestor exists.
+                let parent_container = '';
                 let ancestor = item.parentElement;
                 while (ancestor && ancestor !== document.body) {
                     if (ancestor.classList && ancestor.classList.contains('content-list-item')) {
@@ -521,14 +523,15 @@ class BlackboardScraper:
                             const pLink = ancestor.querySelector(
                                 'a[data-analytics-id*="assessment"], a[class*="contentItemTitle"], a'
                             );
-                            parent_module = pLink ? (pLink.textContent || '').trim() : '';
+                            parent_container = pLink ? (pLink.textContent || '').trim() : '';
+                            break;  // found a valid container — stop
                         }
-                        break;
+                        // Non-container content-list-item (e.g. Text Document) — keep walking up
                     }
                     ancestor = ancestor.parentElement;
                 }
 
-                return { content_type, title, href, time_datetime, parent_module };
+                return { content_type, title, href, time_datetime, parent_container };
             });
         }""")
 
@@ -544,8 +547,9 @@ class BlackboardScraper:
     # CONTENT OBJECT CONSTRUCTION
     # -----------------------------------------------------------------------
 
-    # Content types that are module containers — used to track module context
+    # Content types that act as containers — used to track container context
     # when the DOM nesting structure does not provide an explicit parent.
+    # Only these types may become container_name values; documents must not.
     _MODULE_CONTAINER_TYPES = {"Learning Module", "Folder"}
 
     def _build_content_objects(self, course_info: dict, raw_items: list[dict]) -> list[dict]:
@@ -556,11 +560,14 @@ class BlackboardScraper:
         All items are captured — no type filtering is applied here.
         Items with no title are skipped (they have no identifier).
 
-        Module context is resolved in two passes:
+        Container context is resolved in two passes:
           1. DOM-level: the JS in _extract_modules_and_items walks up the DOM
-             to find a parent Learning Module or Folder container (parent_module).
+             to find the nearest Learning Module or Folder ancestor
+             (parent_container). Non-container types are skipped during the walk.
           2. Python-level fallback: if DOM nesting is flat, track the last-seen
-             module-type item in list order and assign it to subsequent items.
+             Learning Module or Folder item in list order and assign it as
+             container_name to subsequent items. Documents are never used as
+             fallback containers.
 
         The DOM-level value takes priority when present.
         """
@@ -573,7 +580,7 @@ class BlackboardScraper:
         course_url  = f"{BASE_URL}/ultra/courses/{course_id}/outline"
 
         content_objects: list[dict] = []
-        py_current_module: str | None = None  # Python-level module tracking fallback
+        py_current_container: str | None = None  # Python-level container tracking fallback
 
         for idx, item in enumerate(raw_items):
             try:
@@ -581,7 +588,7 @@ class BlackboardScraper:
                 title         = (item.get("title") or "").strip()
                 href          = item.get("href", "")
                 time_datetime = item.get("time_datetime", "")
-                dom_module    = (item.get("parent_module") or "").strip()
+                dom_container = (item.get("parent_container") or "").strip()
 
                 if not title:
                     continue  # unidentifiable item — skip
@@ -589,37 +596,37 @@ class BlackboardScraper:
                 if idx < 10:
                     print(
                         f"    [DEBUG] item[{idx}] type={content_type!r} "
-                        f"title={title!r} dom_module={dom_module!r}",
+                        f"title={title!r} container={dom_container!r}",
                         flush=True,
                     )
 
-                # Python-level module tracking: if this item IS a module
-                # container, it becomes the context for subsequent siblings.
+                # Python-level container tracking: only Learning Module and Folder
+                # items update the tracked container — documents never do.
                 if content_type in self._MODULE_CONTAINER_TYPES:
-                    py_current_module = title
+                    py_current_container = title
 
-                # Resolve module_name:
-                #   DOM value wins if present; otherwise use Python-tracked module,
-                #   but don't assign a module to the module item itself.
-                if dom_module:
-                    module_name = dom_module
+                # Resolve container_name:
+                #   DOM value wins if present; otherwise use Python-tracked container,
+                #   but don't assign a container to the container item itself.
+                if dom_container:
+                    container_name = dom_container
                 elif content_type not in self._MODULE_CONTAINER_TYPES:
-                    module_name = py_current_module
+                    container_name = py_current_container
                 else:
-                    module_name = None  # top-level module — no parent
+                    container_name = None  # top-level container — no parent
 
                 url      = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
                 due_date = self._normalize_date(time_datetime) if time_datetime else None
 
                 content_objects.append({
-                    "course_name":   course_name,
-                    "course_id":     course_id,
-                    "module_name":   module_name,
-                    "title":         title,
-                    "content_type":  content_type,
-                    "url":           url,
-                    "due_date":      due_date,
-                    "due_date_raw":  time_datetime or None,
+                    "course_name":    course_name,
+                    "course_id":      course_id,
+                    "container_name": container_name,
+                    "title":          title,
+                    "content_type":   content_type,
+                    "url":            url,
+                    "due_date":       due_date,
+                    "due_date_raw":   time_datetime or None,
                 })
 
             except Exception as e:
