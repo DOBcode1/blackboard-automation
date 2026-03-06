@@ -322,6 +322,7 @@ class BlackboardScraper:
             self._open_course_outline(page, content_url)
             self._load_all_hidden_items(page)
             self._expand_all_modules(page, content_url)
+            self._expand_all_folders(page, content_url)
             self._stabilize_course_page(page)
 
             # Save post-expansion HTML for the first course to aid debugging
@@ -385,55 +386,75 @@ class BlackboardScraper:
 
     def _expand_all_modules(self, page: Page, course_url: str):
         """
-        Click every collapsed Learning Module or Folder toggle one at a time until none remain.
+        Click every collapsed Learning Module toggle one at a time until none remain.
 
         Re-queries the DOM before each click so stale locators are never used.
         If a click accidentally navigates away from the outline, the method
-        returns to the course URL and continues expanding remaining toggles.
-        A recovery counter caps retries to avoid an infinite loop.
-
-        Selector is scoped to buttons inside div.content-list-item so that
-        unrelated UI buttons (navigation, filters, etc.) are never matched.
-        aria-expanded="false" is the canonical collapsed indicator in BB Ultra
-        for both Learning Modules and Folders.
+        returns to the course URL and stops expanding to avoid an infinite loop.
         """
-        # Scoped to content-list-item so only expand/collapse toggles are matched,
-        # not unrelated buttons elsewhere on the page that could trigger navigation.
-        COLLAPSED_TOGGLE_SELECTOR = 'div.content-list-item button[aria-expanded="false"]'
-        MAX_NAV_RECOVERIES = 5
+        LM_TOGGLE_SELECTOR = (
+            'button[data-analytics-id="course.learning.module.base.item.toggleLm.button"]'
+            '[aria-expanded="false"]'
+        )
 
-        nav_recoveries = 0
-
-        for attempt in range(50):  # higher cap for deeply nested modules/folders
-            collapsed = page.locator(COLLAPSED_TOGGLE_SELECTOR)
+        for attempt in range(30):  # higher cap for deeply nested modules
+            collapsed = page.locator(LM_TOGGLE_SELECTOR)
             count = collapsed.count()
             if count == 0:
                 break
-            print(f"    [DEBUG] Expanding collapsed module/folder toggle(s) ({count} visible), attempt {attempt + 1}...", flush=True)
+            print(f"    [DEBUG] Expanding {count} collapsed Learning Module(s), attempt {attempt + 1}...", flush=True)
             try:
                 collapsed.first.click()
-                time.sleep(1.5)  # allow lazy content inside folder/LM to load
+                time.sleep(1)
             except Exception as e:
-                print(f"    [WARN] Could not click module/folder toggle: {e}", flush=True)
+                print(f"    [WARN] Could not click learning module toggle: {e}", flush=True)
                 break
 
             # Safety: if the click navigated away, go back to course outline
             if course_url and not page.url.rstrip("/").endswith("/outline"):
-                nav_recoveries += 1
-                print(
-                    f"    [WARN] Navigation detected during expansion ({page.url}), "
-                    f"returning to outline (recovery {nav_recoveries}/{MAX_NAV_RECOVERIES})...",
-                    flush=True,
-                )
+                print(f"    [WARN] Navigation detected during LM expansion ({page.url}), returning to outline...", flush=True)
                 page.goto(course_url, wait_until="domcontentloaded", timeout=30_000)
                 try:
                     page.wait_for_selector("div.content-list-item", timeout=PAGE_LOAD_TIMEOUT_MS)
                 except PlaywrightTimeoutError:
                     pass
-                if nav_recoveries >= MAX_NAV_RECOVERIES:
-                    print("    [WARN] Too many navigation events during expansion, stopping.", flush=True)
-                    break
-                # Continue the loop — more collapsed toggles may remain after recovery
+                break  # Stop expansion after recovery to avoid loop
+
+    def _expand_all_folders(self, page: Page, course_url: str):
+        """
+        Click every collapsed Folder toggle one at a time until none remain.
+
+        Runs as a second independent pass after _expand_all_modules so that
+        folders nested inside Learning Modules are already visible in the DOM.
+        Same recovery logic as _expand_all_modules.
+        """
+        FOLDER_TOGGLE_SELECTOR = (
+            'button[data-analytics-id="course.folder.base.item.toggleLm.button"]'
+            '[aria-expanded="false"]'
+        )
+
+        for attempt in range(30):
+            collapsed = page.locator(FOLDER_TOGGLE_SELECTOR)
+            count = collapsed.count()
+            if count == 0:
+                break
+            print(f"    [DEBUG] Expanding {count} collapsed Folder(s), attempt {attempt + 1}...", flush=True)
+            try:
+                collapsed.first.click()
+                time.sleep(1)
+            except Exception as e:
+                print(f"    [WARN] Could not click folder toggle: {e}", flush=True)
+                break
+
+            # Safety: if the click navigated away, go back to course outline
+            if course_url and not page.url.rstrip("/").endswith("/outline"):
+                print(f"    [WARN] Navigation detected during Folder expansion ({page.url}), returning to outline...", flush=True)
+                page.goto(course_url, wait_until="domcontentloaded", timeout=30_000)
+                try:
+                    page.wait_for_selector("div.content-list-item", timeout=PAGE_LOAD_TIMEOUT_MS)
+                except PlaywrightTimeoutError:
+                    pass
+                break  # Stop expansion after recovery to avoid loop
 
     def _stabilize_course_page(self, page: Page):
         """
