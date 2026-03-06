@@ -489,8 +489,6 @@ class BlackboardScraper:
           a[class*="contentItemTitle"]       — title fallback [FRAGILE — hashed class]
         """
         raw_items: list[dict] = page.evaluate("""() => {
-            const results = [];
-
             function extractItem(item) {
                 // content_type from svg[aria-label] [STABLE]
                 const svg = item.querySelector('svg[aria-label]');
@@ -554,26 +552,8 @@ class BlackboardScraper:
                 return { content_type, title, href, time_datetime, parent_container };
             }
 
-            function walkList(container) {
-                // Only direct children to avoid premature flattening of nested lists.
-                const children = container.querySelectorAll(':scope > .content-list-item');
-                for (const item of children) {
-                    results.push(extractItem(item));
-                    // Recurse into any nested content list so children follow their parent
-                    // in visual order.
-                    const nested = item.querySelector(':scope > .content-list');
-                    if (nested) {
-                        walkList(nested);
-                    }
-                }
-            }
-
-            const topList = document.querySelector('.content-list');
-            if (topList) {
-                walkList(topList);
-            }
-
-            return results;
+            return Array.from(document.querySelectorAll('div.content-list-item'))
+                .map(item => extractItem(item));
         }""")
 
         print(f"    [DEBUG] {len(raw_items)} content-list-item(s) found after expand", flush=True)
