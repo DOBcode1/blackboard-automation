@@ -8,7 +8,9 @@ output/content_objects_<timestamp>.json.
 Phase 1: Course discovery + virtualization scroll harvesting (unchanged).
 Phase 2: All course items are captured as structured content objects with
          course name, course id, container name, title, content type, url,
-         and due date. No filtering or interpretation is applied here.
+         and due date. Container assignment uses sequential sibling tracking
+         (Learning Module / Folder items seen first in DOM order set the
+         container for items that follow them). No filtering applied.
 
 SELECTOR NOTES:
   Selectors marked [STABLE] rely on href patterns or ARIA labels.
@@ -383,26 +385,37 @@ class BlackboardScraper:
 
     def _expand_all_modules(self, page: Page, course_url: str):
         """
-        Click every collapsed Learning Module toggle one at a time until none remain.
+        Click every collapsed Learning Module or Folder toggle one at a time until none remain.
 
         Re-queries the DOM before each click so stale locators are never used.
         If a click accidentally navigates away from the outline, the method
         returns to the course URL and stops expanding to avoid an infinite loop.
+
+        NOTE: The folder toggle selector follows the same naming convention as
+        the learning module toggle. Verify against a live course with Folders
+        in DevTools if it stops working after a Blackboard update.
         """
+        # Combined selector for both Learning Module and Folder collapsed toggles.
+        # [STABLE] Learning Module: confirmed from live DOM.
+        # [STABLE] Folder:          follows the same Blackboard Ultra naming pattern.
+        COLLAPSED_TOGGLE_SELECTOR = (
+            'button[data-analytics-id="course.learning.module.base.item.toggleLm.button"]'
+            '[aria-expanded="false"],'
+            'button[data-analytics-id="course.folder.base.item.toggleLm.button"]'
+            '[aria-expanded="false"]'
+        )
+
         for attempt in range(30):  # higher cap for deeply nested modules
-            collapsed = page.locator(
-                'button[data-analytics-id="course.learning.module.base.item.toggleLm.button"]'
-                '[aria-expanded="false"]'
-            )
+            collapsed = page.locator(COLLAPSED_TOGGLE_SELECTOR)
             count = collapsed.count()
             if count == 0:
                 break
-            print(f"    [DEBUG] Expanding {count} collapsed module(s), attempt {attempt + 1}...", flush=True)
+            print(f"    [DEBUG] Expanding {count} collapsed module/folder toggle(s), attempt {attempt + 1}...", flush=True)
             try:
                 collapsed.first.click()
                 time.sleep(1)
             except Exception as e:
-                print(f"    [WARN] Could not click learning module toggle: {e}", flush=True)
+                print(f"    [WARN] Could not click module/folder toggle: {e}", flush=True)
                 break
 
             # Safety: if the click navigated away, go back to course outline
@@ -548,9 +561,9 @@ class BlackboardScraper:
     # CONTENT OBJECT CONSTRUCTION
     # -----------------------------------------------------------------------
 
-    # Content types that act as containers — used to track container context
-    # when the DOM nesting structure does not provide an explicit parent.
-    # Only these types may become container_name values; documents must not.
+    # Content types that act as containers for sequential tracking.
+    # When one of these is encountered in list order it becomes the active
+    # container_name for all subsequent items until the next container.
     _MODULE_CONTAINER_TYPES = {"Learning Module", "Folder"}
 
     def _build_content_objects(self, course_info: dict, raw_items: list[dict]) -> list[dict]:
@@ -561,16 +574,12 @@ class BlackboardScraper:
         All items are captured — no type filtering is applied here.
         Items with no title are skipped (they have no identifier).
 
-        Container context is resolved in two passes:
-          1. DOM-level: the JS in _extract_modules_and_items walks up the DOM
-             to find the nearest Learning Module or Folder ancestor
-             (parent_container). Non-container types are skipped during the walk.
-          2. Python-level fallback: if DOM nesting is flat, track the last-seen
-             Learning Module or Folder item in list order and assign it as
-             container_name to subsequent items. Documents are never used as
-             fallback containers.
-
-        The DOM-level value takes priority when present.
+        Container context uses sequential tracking: Blackboard Ultra renders
+        module/folder headers and their child items as siblings in the DOM
+        (not as nested elements), so ancestor-walking is unreliable. Instead,
+        we iterate items in order: when a Learning Module or Folder is seen it
+        becomes the active container; all subsequent items inherit that container
+        name until the next container appears.
         """
         if not raw_items:
             print(f"    [INFO] No content items found on page.")
@@ -581,7 +590,7 @@ class BlackboardScraper:
         course_url  = f"{BASE_URL}/ultra/courses/{course_id}/outline"
 
         content_objects: list[dict] = []
-        py_current_container: str | None = None  # Python-level container tracking fallback
+        current_container: str | None = None  # sequential container tracking
 
         for idx, item in enumerate(raw_items):
             try:
@@ -589,7 +598,6 @@ class BlackboardScraper:
                 title         = (item.get("title") or "").strip()
                 href          = item.get("href", "")
                 time_datetime = item.get("time_datetime", "")
-                dom_container = (item.get("parent_container") or "").strip()
 
                 if not title:
                     continue  # unidentifiable item — skip
@@ -597,24 +605,18 @@ class BlackboardScraper:
                 if idx < 10:
                     print(
                         f"    [DEBUG] item[{idx}] type={content_type!r} "
-                        f"title={title!r} container={dom_container!r}",
+                        f"title={title!r} container={current_container!r}",
                         flush=True,
                     )
 
-                # Python-level container tracking: only Learning Module and Folder
-                # items update the tracked container — documents never do.
+                # Sequential container tracking:
+                #   A Learning Module or Folder item becomes the active container;
+                #   all following items are assigned to it until the next container.
                 if content_type in self._MODULE_CONTAINER_TYPES:
-                    py_current_container = title
-
-                # Resolve container_name:
-                #   DOM value wins if present; otherwise use Python-tracked container,
-                #   but don't assign a container to the container item itself.
-                if dom_container:
-                    container_name = dom_container
-                elif content_type not in self._MODULE_CONTAINER_TYPES:
-                    container_name = py_current_container
+                    current_container = title
+                    container_name = None   # the container itself has no parent
                 else:
-                    container_name = None  # top-level container — no parent
+                    container_name = current_container
 
                 url      = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
                 due_date = self._normalize_date(time_datetime) if time_datetime else None
