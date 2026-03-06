@@ -1,8 +1,14 @@
 """
 blackboard/scraper.py
 
-Blackboard Ultra assignment extractor using Playwright (sync API).
-Extracts Spring 2026 course assignments and saves them to output/assignments_<timestamp>.json.
+Blackboard Ultra course content extractor using Playwright (sync API).
+Extracts Spring 2026 course content objects and saves them to
+output/content_objects_<timestamp>.json.
+
+Phase 1: Course discovery + virtualization scroll harvesting (unchanged).
+Phase 2: All course items are captured as structured content objects with
+         course name, course id, module name, title, content type, url,
+         and due date. No filtering or interpretation is applied here.
 
 SELECTOR NOTES:
   Selectors marked [STABLE] rely on href patterns or ARIA labels.
@@ -80,8 +86,7 @@ class BlackboardScraper:
             "extracted_at": "",
             "term": TERM_FILTER,
             "courses": [],
-            "total_assignments": 0,
-            "courses_with_no_assignments": [],
+            "total_content_objects": 0,
         }
 
     def run(self):
@@ -186,14 +191,10 @@ class BlackboardScraper:
                 for course_info in course_links:
                     course_data = self._scrape_course(page, course_info)
                     self.results["courses"].append(course_data)
-                    self.results["total_assignments"] += course_data["assignment_count"]
-                    if course_data["assignment_count"] == 0:
-                        self.results["courses_with_no_assignments"].append(
-                            course_data["course_name"]
-                        )
+                    self.results["total_content_objects"] += course_data["item_count"]
 
                 output_path = self._write_output()
-                print(f"\nDone. {self.results['total_assignments']} assignment(s) "
+                print(f"\nDone. {self.results['total_content_objects']} content object(s) "
                       f"saved to: {output_path}")
 
             finally:
@@ -311,8 +312,8 @@ class BlackboardScraper:
             "course_id": course_id,
             "course_name": name,
             "course_url": content_url,
-            "assignments": [],
-            "assignment_count": 0,
+            "content_objects": [],
+            "item_count": 0,
         }
 
         try:
@@ -329,14 +330,11 @@ class BlackboardScraper:
             print(f"    [DEBUG] URL after expand:  {page.url}", flush=True)
 
             raw_items = self._extract_modules_and_items(page)
-            assignments = self._extract_assignments(content_url, raw_items)
-            course_data["assignments"] = assignments
-            course_data["assignment_count"] = len(assignments)
+            content_objects = self._build_content_objects(course_info, raw_items)
+            course_data["content_objects"] = content_objects
+            course_data["item_count"] = len(content_objects)
 
-            if assignments:
-                print(f"    {len(assignments)} assignment(s) found.")
-            else:
-                print(f"    No assignments found.")
+            print(f"    {len(content_objects)} content object(s) captured.")
 
         except Exception as e:
             print(f"    [ERROR] {e}")
@@ -473,6 +471,7 @@ class BlackboardScraper:
         """
         raw_items: list[dict] = page.evaluate("""() => {
             const items = document.querySelectorAll('div.content-list-item');
+
             return Array.from(items).map(item => {
                 // content_type from svg[aria-label] [STABLE]
                 const svg = item.querySelector('svg[aria-label]');
@@ -509,7 +508,27 @@ class BlackboardScraper:
                 const timeEl = searchRoot.querySelector('time[datetime]');
                 const time_datetime = timeEl ? (timeEl.getAttribute('datetime') || '') : '';
 
-                return { content_type, title, href, time_datetime };
+                // parent_module: walk up ancestors to find a containing content-list-item
+                // that represents a Learning Module or Folder (best-effort, [FRAGILE]).
+                // Returns empty string if this item is at the top level.
+                let parent_module = '';
+                let ancestor = item.parentElement;
+                while (ancestor && ancestor !== document.body) {
+                    if (ancestor.classList && ancestor.classList.contains('content-list-item')) {
+                        const pSvg = ancestor.querySelector('svg[aria-label]');
+                        const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
+                        if (pType === 'Learning Module' || pType === 'Folder') {
+                            const pLink = ancestor.querySelector(
+                                'a[data-analytics-id*="assessment"], a[class*="contentItemTitle"], a'
+                            );
+                            parent_module = pLink ? (pLink.textContent || '').trim() : '';
+                        }
+                        break;
+                    }
+                    ancestor = ancestor.parentElement;
+                }
+
+                return { content_type, title, href, time_datetime, parent_module };
             });
         }""")
 
@@ -522,65 +541,93 @@ class BlackboardScraper:
         return raw_items
 
     # -----------------------------------------------------------------------
-    # ASSIGNMENT EXTRACTION
+    # CONTENT OBJECT CONSTRUCTION
     # -----------------------------------------------------------------------
 
-    def _extract_assignments(self, course_url: str, raw_items: list[dict]) -> list[dict]:
-        """
-        Convert raw DOM items returned by _extract_modules_and_items into
-        structured assignment dicts, deduplicating by title.
+    # Content types that are module containers — used to track module context
+    # when the DOM nesting structure does not provide an explicit parent.
+    _MODULE_CONTAINER_TYPES = {"Learning Module", "Folder"}
 
-        Only items whose svg[aria-label] matches ACTIONABLE_TYPES are processed.
-        All other content (Documents, Folders, Announcements, etc.) is skipped.
+    def _build_content_objects(self, course_info: dict, raw_items: list[dict]) -> list[dict]:
+        """
+        Convert every raw DOM item from _extract_modules_and_items into a
+        self-contained content object.
+
+        All items are captured — no type filtering is applied here.
+        Items with no title are skipped (they have no identifier).
+
+        Module context is resolved in two passes:
+          1. DOM-level: the JS in _extract_modules_and_items walks up the DOM
+             to find a parent Learning Module or Folder container (parent_module).
+          2. Python-level fallback: if DOM nesting is flat, track the last-seen
+             module-type item in list order and assign it to subsequent items.
+
+        The DOM-level value takes priority when present.
         """
         if not raw_items:
             print(f"    [INFO] No content items found on page.")
             return []
 
-        assignments = []
-        seen = set()
-        actionable_count = 0
+        course_name = course_info["course_name"]
+        course_id   = course_info["course_id"]
+        course_url  = f"{BASE_URL}/ultra/courses/{course_id}/outline"
+
+        content_objects: list[dict] = []
+        py_current_module: str | None = None  # Python-level module tracking fallback
 
         for idx, item in enumerate(raw_items):
             try:
-                content_type = item['content_type']
-                title        = item['title']
-                href         = item['href']
+                content_type  = item.get("content_type", "")
+                title         = (item.get("title") or "").strip()
+                href          = item.get("href", "")
+                time_datetime = item.get("time_datetime", "")
+                dom_module    = (item.get("parent_module") or "").strip()
 
-                # STABILIZATION PHASE 1: type filtering disabled — extract everything
-                # if content_type not in ACTIONABLE_TYPES:
-                #     continue
-                actionable_count += 1
+                if not title:
+                    continue  # unidentifiable item — skip
 
                 if idx < 10:
-                    print(f"    [DEBUG] item[{idx}] content_type={content_type!r} title={title!r}", flush=True)
+                    print(
+                        f"    [DEBUG] item[{idx}] type={content_type!r} "
+                        f"title={title!r} dom_module={dom_module!r}",
+                        flush=True,
+                    )
 
-                if not title or title in seen:
-                    continue
-                seen.add(title)
+                # Python-level module tracking: if this item IS a module
+                # container, it becomes the context for subsequent siblings.
+                if content_type in self._MODULE_CONTAINER_TYPES:
+                    py_current_module = title
 
-                url = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
+                # Resolve module_name:
+                #   DOM value wins if present; otherwise use Python-tracked module,
+                #   but don't assign a module to the module item itself.
+                if dom_module:
+                    module_name = dom_module
+                elif content_type not in self._MODULE_CONTAINER_TYPES:
+                    module_name = py_current_module
+                else:
+                    module_name = None  # top-level module — no parent
 
-                time_datetime = item['time_datetime']
-                due_date      = self._normalize_date(time_datetime) if time_datetime else None
-                due_date_raw  = time_datetime or None
-                status        = self._compute_status(due_date)
+                url      = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
+                due_date = self._normalize_date(time_datetime) if time_datetime else None
 
-                assignments.append({
-                    "title":        title,
-                    "content_type": content_type,
-                    "due_date":     due_date,
-                    "due_date_raw": due_date_raw,
-                    "status":       status,
-                    "url":          url,
+                content_objects.append({
+                    "course_name":   course_name,
+                    "course_id":     course_id,
+                    "module_name":   module_name,
+                    "title":         title,
+                    "content_type":  content_type,
+                    "url":           url,
+                    "due_date":      due_date,
+                    "due_date_raw":  time_datetime or None,
                 })
 
             except Exception as e:
                 print(f"    [WARN] Skipped one item: {e}")
                 continue
 
-        print(f"    [DEBUG] {actionable_count} actionable item(s) matched ACTIONABLE_TYPES", flush=True)
-        return assignments
+        print(f"    [DEBUG] Built {len(content_objects)} content object(s).", flush=True)
+        return content_objects
 
     def _extract_due_date(self, elem) -> tuple[str | None, str | None]:
         """
@@ -637,16 +684,6 @@ class BlackboardScraper:
                 continue
         return None
 
-    def _compute_status(self, due_date_str: str | None) -> str:
-        if not due_date_str:
-            return "unknown"
-        try:
-            due = datetime.strptime(due_date_str, "%Y-%m-%d").date()
-            today = datetime.now(timezone.utc).date()
-            return "upcoming" if due >= today else "past"
-        except ValueError:
-            return "unknown"
-
     # -----------------------------------------------------------------------
     # DEBUG
     # -----------------------------------------------------------------------
@@ -666,7 +703,7 @@ class BlackboardScraper:
     def _write_output(self) -> str:
         os.makedirs("output", exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"output/assignments_{timestamp}.json"
+        filename = f"output/content_objects_{timestamp}.json"
         with open(filename, "w", encoding="utf-8") as f:
             json.dump(self.results, f, indent=2, ensure_ascii=False)
         return filename
