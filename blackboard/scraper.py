@@ -395,15 +395,10 @@ class BlackboardScraper:
         the learning module toggle. Verify against a live course with Folders
         in DevTools if it stops working after a Blackboard update.
         """
-        # Combined selector for both Learning Module and Folder collapsed toggles.
-        # [STABLE] Learning Module: confirmed from live DOM.
-        # [STABLE] Folder:          follows the same Blackboard Ultra naming pattern.
-        COLLAPSED_TOGGLE_SELECTOR = (
-            'button[data-analytics-id="course.learning.module.base.item.toggleLm.button"]'
-            '[aria-expanded="false"],'
-            'button[data-analytics-id="course.folder.base.item.toggleLm.button"]'
-            '[aria-expanded="false"]'
-        )
+        # Select any collapsed toggle button regardless of data-analytics-id.
+        # aria-expanded="false" is the canonical indicator that a container is
+        # collapsed in Blackboard Ultra, covering both Learning Modules and Folders.
+        COLLAPSED_TOGGLE_SELECTOR = 'button[aria-expanded="false"]'
 
         for attempt in range(30):  # higher cap for deeply nested modules
             collapsed = page.locator(COLLAPSED_TOGGLE_SELECTOR)
