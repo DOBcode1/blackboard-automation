@@ -473,8 +473,14 @@ class BlackboardScraper:
 
     def _extract_modules_and_items(self, page: Page) -> list[dict]:
         """
-        Single JS round-trip that reads all div.content-list-item elements and
-        returns their raw data (content type, title, href, due-date datetime).
+        Single JS round-trip that walks the content tree in visual order and
+        returns raw data (content type, title, href, due-date datetime).
+
+        Traversal: starts at the top-level .content-list, iterates direct
+        children (:scope > .content-list-item), then recurses into any nested
+        .content-list before moving to the next sibling.  This preserves the
+        visual hierarchy so that sequential container tracking in
+        _build_content_objects assigns container_name correctly.
 
         Confirmed DOM structure (from live Blackboard Ultra DOM):
           div.content-list-item              — one per content item [STABLE]
@@ -483,9 +489,9 @@ class BlackboardScraper:
           a[class*="contentItemTitle"]       — title fallback [FRAGILE — hashed class]
         """
         raw_items: list[dict] = page.evaluate("""() => {
-            const items = document.querySelectorAll('div.content-list-item');
+            const results = [];
 
-            return Array.from(items).map(item => {
+            function extractItem(item) {
                 // content_type from svg[aria-label] [STABLE]
                 const svg = item.querySelector('svg[aria-label]');
                 const content_type = svg ? (svg.getAttribute('aria-label') || '') : '';
@@ -546,7 +552,28 @@ class BlackboardScraper:
                 }
 
                 return { content_type, title, href, time_datetime, parent_container };
-            });
+            }
+
+            function walkList(container) {
+                // Only direct children to avoid premature flattening of nested lists.
+                const children = container.querySelectorAll(':scope > .content-list-item');
+                for (const item of children) {
+                    results.push(extractItem(item));
+                    // Recurse into any nested content list so children follow their parent
+                    // in visual order.
+                    const nested = item.querySelector(':scope > .content-list');
+                    if (nested) {
+                        walkList(nested);
+                    }
+                }
+            }
+
+            const topList = document.querySelector('.content-list');
+            if (topList) {
+                walkList(topList);
+            }
+
+            return results;
         }""")
 
         print(f"    [DEBUG] {len(raw_items)} content-list-item(s) found after expand", flush=True)
