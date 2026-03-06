@@ -519,14 +519,15 @@ class BlackboardScraper:
                     if (ancestor.classList && ancestor.classList.contains('content-list-item')) {
                         const pSvg = ancestor.querySelector('svg[aria-label]');
                         const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
-                        if (pType === 'Learning Module' || pType === 'Folder') {
+                        const hasChildList = ancestor.querySelector('.content-list');
+                        if ((pType === 'Learning Module' || pType === 'Folder') && hasChildList) {
                             const pLink = ancestor.querySelector(
                                 'a[data-analytics-id*="assessment"], a[class*="contentItemTitle"], a'
                             );
                             parent_container = pLink ? (pLink.textContent || '').trim() : '';
                             break;  // found a valid container — stop
                         }
-                        // Non-container content-list-item (e.g. Text Document) — keep walking up
+                        // Non-container content-list-item (e.g. Text Document, PDF) — keep walking up
                     }
                     ancestor = ancestor.parentElement;
                 }
