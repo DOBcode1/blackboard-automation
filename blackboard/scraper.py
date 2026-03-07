@@ -580,10 +580,8 @@ class BlackboardScraper:
                         const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
                         const hasChildList = ancestor.querySelector('.content-list');
                         if ((pType === 'Learning Module' || pType === 'Folder' || pType === 'Open Folder') && hasChildList) {
-                            // Clone ancestor, strip nested .content-list subtrees, use remaining text
-                            const clone = ancestor.cloneNode(true);
-                            clone.querySelectorAll('.content-list').forEach(el => el.remove());
-                            parent_container = clone.textContent.trim();
+                            const toggleBtn = ancestor.querySelector('button[aria-expanded]');
+                            parent_container = toggleBtn ? toggleBtn.textContent.trim() : '';
                             break;  // found a valid container — stop
                         }
                         // Non-container content-list-item (e.g. Text Document, PDF) — keep walking up
