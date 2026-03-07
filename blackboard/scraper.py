@@ -578,7 +578,7 @@ class BlackboardScraper:
                     if (ancestor.classList && ancestor.classList.contains('content-list-item')) {
                         const pSvg = ancestor.querySelector('svg[aria-label]');
                         const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
-                        const hasChildList = ancestor.querySelector('.content-list');
+                        const hasChildList = ancestor.querySelector('.content-list') || ancestor.querySelector(':scope > div > .content-list-item, :scope .MuiCollapse-root .content-list-item');
                         if ((pType === 'Learning Module' || pType === 'Folder' || pType === 'Open Folder') && hasChildList) {
                             const toggleBtn = ancestor.querySelector('button[data-analytics-id*="toggleLm"], button[data-analytics-id*="toggleFolder"]');
                             parent_container = toggleBtn ? toggleBtn.textContent.trim() : '';
@@ -590,8 +590,8 @@ class BlackboardScraper:
                 }
 
                 // is_nested: true when the item is inside another .content-list-item ancestor
-                const closestItem = item.closest('.content-list-item');
-                const is_nested = closestItem !== null && closestItem !== item;
+                const closestItem = item.parentElement?.closest('.content-list-item');
+                const is_nested = closestItem !== null && closestItem !== undefined;
 
                 return { content_type, title, href, time_datetime, parent_container, is_nested };
             }
