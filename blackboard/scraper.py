@@ -669,11 +669,11 @@ class BlackboardScraper:
                     container_name = parent_container
                 else:
                     # JS walk found nothing; use sequential tracking
-                    # Reset tracker first when this item is clearly at the top level
+                    container_name = current_container
+                    # Reset tracker when this item is clearly at the top level
                     # so it doesn't bleed into subsequent unrelated items
                     if not is_nested:
                         current_container = None
-                    container_name = current_container
 
                 if idx < 10:
                     print(
