@@ -580,7 +580,7 @@ class BlackboardScraper:
                         const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
                         const hasChildList = ancestor.querySelector('.content-list');
                         if ((pType === 'Learning Module' || pType === 'Folder' || pType === 'Open Folder') && hasChildList) {
-                            const toggleBtn = ancestor.querySelector('button[aria-expanded]');
+                            const toggleBtn = ancestor.querySelector('button[data-analytics-id*="toggleLm"], button[data-analytics-id*="toggleFolder"]');
                             parent_container = toggleBtn ? toggleBtn.textContent.trim() : '';
                             break;  // found a valid container — stop
                         }
@@ -589,13 +589,9 @@ class BlackboardScraper:
                     ancestor = ancestor.parentElement;
                 }
 
-                // is_nested: true when the item's parent .content-list is itself
-                // inside a .content-list-item (i.e. the item lives inside a container),
-                // false when the parent .content-list is a top-level one.
-                const parentList = item.parentElement;
-                const is_nested = (parentList && parentList.classList && parentList.classList.contains('content-list'))
-                    ? !!parentList.closest('.content-list-item')
-                    : false;
+                // is_nested: true when the item is inside another .content-list-item ancestor
+                const closestItem = item.closest('.content-list-item');
+                const is_nested = closestItem !== null && closestItem !== item;
 
                 return { content_type, title, href, time_datetime, parent_container, is_nested };
             }
