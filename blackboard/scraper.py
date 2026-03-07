@@ -8,8 +8,8 @@ output/content_objects_<timestamp>.json.
 Phase 1: Course discovery + virtualization scroll harvesting (unchanged).
 Phase 2: All course items are captured as structured content objects with
          course name, course id, container name, title, content type, url,
-         and due date. Container assignment uses JS ancestor-walking to find
-         the nearest enclosing Learning Module / Folder. No filtering applied.
+         and due date. Container assignment uses sequential tracking (primary)
+         combined with JS ancestor-walking (secondary). No filtering applied.
 
 SELECTOR NOTES:
   Selectors marked [STABLE] rely on href patterns or ARIA labels.
@@ -591,7 +591,15 @@ class BlackboardScraper:
                     ancestor = ancestor.parentElement;
                 }
 
-                return { content_type, title, href, time_datetime, parent_container };
+                // is_nested: true when the item's parent .content-list is itself
+                // inside a .content-list-item (i.e. the item lives inside a container),
+                // false when the parent .content-list is a top-level one.
+                const parentList = item.parentElement;
+                const is_nested = (parentList && parentList.classList && parentList.classList.contains('content-list'))
+                    ? !!parentList.closest('.content-list-item')
+                    : false;
+
+                return { content_type, title, href, time_datetime, parent_container, is_nested };
             }
 
             return Array.from(document.querySelectorAll('div.content-list-item'))
@@ -622,10 +630,16 @@ class BlackboardScraper:
         All items are captured — no type filtering is applied here.
         Items with no title are skipped (they have no identifier).
 
-        Container context uses the parent_container field set by JS ancestor-walking
-        in _extract_modules_and_items. If parent_container is a non-empty string the
-        item belongs to that container; if it is empty the item is at the top level
-        (container_name = None). Sequential sibling tracking is NOT used.
+        Container assignment strategy (primary: sequential tracking; secondary: JS
+        ancestor-walk via parent_container):
+          - current_container tracks the most recently seen container item by title.
+          - When content_type is in _MODULE_CONTAINER_TYPES: record title as
+            current_container and skip emitting the item.
+          - For non-container items: prefer parent_container (JS ancestor-walk) when
+            non-empty; otherwise fall back to current_container.
+          - When a non-container item has no JS parent_container AND is not nested
+            inside a container in the DOM (is_nested=False), reset current_container
+            to None so it does not bleed into unrelated top-level items.
         """
         if not raw_items:
             print(f"    [INFO] No content items found on page.")
@@ -636,23 +650,36 @@ class BlackboardScraper:
         course_url  = f"{BASE_URL}/ultra/courses/{course_id}/outline"
 
         content_objects: list[dict] = []
+        current_container: str | None = None
 
         for idx, item in enumerate(raw_items):
             try:
-                content_type   = item.get("content_type", "")
-                title          = (item.get("title") or "").strip()
-                href           = item.get("href", "")
-                time_datetime  = item.get("time_datetime", "")
+                content_type     = item.get("content_type", "")
+                title            = (item.get("title") or "").strip()
+                href             = item.get("href", "")
+                time_datetime    = item.get("time_datetime", "")
                 parent_container = (item.get("parent_container") or "").strip()
+                is_nested        = item.get("is_nested", False)
 
                 if not title:
                     continue  # unidentifiable item — skip
 
-                # Container items are structural — skip emitting them as content objects
+                # Container items are structural: record them and skip emitting
                 if content_type in self._MODULE_CONTAINER_TYPES:
+                    current_container = title
                     continue
 
-                container_name = parent_container if parent_container else None
+                # Determine container_name for this item
+                if parent_container:
+                    # JS ancestor-walk succeeded — use it directly
+                    container_name = parent_container
+                else:
+                    # JS walk found nothing; use sequential tracking
+                    container_name = current_container
+                    # Reset tracker when this item is clearly at the top level
+                    # so it doesn't bleed into subsequent unrelated items
+                    if not is_nested:
+                        current_container = None
 
                 if idx < 10:
                     print(
