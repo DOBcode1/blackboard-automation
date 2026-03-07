@@ -8,9 +8,8 @@ output/content_objects_<timestamp>.json.
 Phase 1: Course discovery + virtualization scroll harvesting (unchanged).
 Phase 2: All course items are captured as structured content objects with
          course name, course id, container name, title, content type, url,
-         and due date. Container assignment uses sequential sibling tracking
-         (Learning Module / Folder items seen first in DOM order set the
-         container for items that follow them). No filtering applied.
+         and due date. Container assignment uses JS ancestor-walking to find
+         the nearest enclosing Learning Module / Folder. No filtering applied.
 
 SELECTOR NOTES:
   Selectors marked [STABLE] rely on href patterns or ARIA labels.
@@ -581,9 +580,23 @@ class BlackboardScraper:
                         const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
                         const hasChildList = ancestor.querySelector('.content-list');
                         if ((pType === 'Learning Module' || pType === 'Folder' || pType === 'Open Folder') && hasChildList) {
-                            const pLink = ancestor.querySelector(
+                            // Find the container's own title link — must NOT be inside a nested .content-list
+                            const candidates = ancestor.querySelectorAll(
                                 'a[data-analytics-id*="assessment"], a[class*="contentItemTitle"], a'
                             );
+                            let pLink = null;
+                            for (const link of candidates) {
+                                let el = link.parentElement;
+                                let isNested = false;
+                                while (el && el !== ancestor) {
+                                    if (el.classList && el.classList.contains('content-list')) {
+                                        isNested = true;
+                                        break;
+                                    }
+                                    el = el.parentElement;
+                                }
+                                if (!isNested) { pLink = link; break; }
+                            }
                             parent_container = pLink ? (pLink.textContent || '').trim() : '';
                             break;  // found a valid container — stop
                         }
@@ -611,9 +624,8 @@ class BlackboardScraper:
     # CONTENT OBJECT CONSTRUCTION
     # -----------------------------------------------------------------------
 
-    # Content types that act as containers for sequential tracking.
-    # When one of these is encountered in list order it becomes the active
-    # container_name for all subsequent items until the next container.
+    # Content types that act as expandable containers.
+    # Items of these types are structural — they are not emitted as content objects.
     _MODULE_CONTAINER_TYPES = {"Learning Module", "Folder", "Open Folder"}
 
     def _build_content_objects(self, course_info: dict, raw_items: list[dict]) -> list[dict]:
@@ -624,12 +636,10 @@ class BlackboardScraper:
         All items are captured — no type filtering is applied here.
         Items with no title are skipped (they have no identifier).
 
-        Container context uses sequential tracking: Blackboard Ultra renders
-        module/folder headers and their child items as siblings in the DOM
-        (not as nested elements), so ancestor-walking is unreliable. Instead,
-        we iterate items in order: when a Learning Module or Folder is seen it
-        becomes the active container; all subsequent items inherit that container
-        name until the next container appears.
+        Container context uses the parent_container field set by JS ancestor-walking
+        in _extract_modules_and_items. If parent_container is a non-empty string the
+        item belongs to that container; if it is empty the item is at the top level
+        (container_name = None). Sequential sibling tracking is NOT used.
         """
         if not raw_items:
             print(f"    [INFO] No content items found on page.")
@@ -640,34 +650,30 @@ class BlackboardScraper:
         course_url  = f"{BASE_URL}/ultra/courses/{course_id}/outline"
 
         content_objects: list[dict] = []
-        current_container: str | None = None  # sequential container tracking
 
         for idx, item in enumerate(raw_items):
             try:
-                content_type  = item.get("content_type", "")
-                title         = (item.get("title") or "").strip()
-                href          = item.get("href", "")
-                time_datetime = item.get("time_datetime", "")
+                content_type   = item.get("content_type", "")
+                title          = (item.get("title") or "").strip()
+                href           = item.get("href", "")
+                time_datetime  = item.get("time_datetime", "")
+                parent_container = (item.get("parent_container") or "").strip()
 
                 if not title:
                     continue  # unidentifiable item — skip
 
+                # Container items are structural — skip emitting them as content objects
+                if content_type in self._MODULE_CONTAINER_TYPES:
+                    continue
+
+                container_name = parent_container if parent_container else None
+
                 if idx < 10:
                     print(
                         f"    [DEBUG] item[{idx}] type={content_type!r} "
-                        f"title={title!r} container={current_container!r}",
+                        f"title={title!r} container={container_name!r}",
                         flush=True,
                     )
-
-                # Sequential container tracking:
-                #   A Learning Module, Folder, or Open Folder item becomes the active
-                #   container; all following items are assigned to it until the next
-                #   container. Container items themselves are not emitted as content.
-                if content_type in self._MODULE_CONTAINER_TYPES:
-                    current_container = title
-                    continue  # containers are structural — skip emitting
-
-                container_name = current_container
 
                 url      = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
                 due_date = self._normalize_date(time_datetime) if time_datetime else None
