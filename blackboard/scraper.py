@@ -531,6 +531,19 @@ class BlackboardScraper:
           a[class*="contentItemTitle"]       — title fallback [FRAGILE — hashed class]
         """
         raw_items: list[dict] = page.evaluate("""() => {
+            // Build a map of data-content-id → container name for all toggle buttons.
+            // Covers both Learning Module (toggleLm) and Folder (toggleFolder) containers.
+            const containerMap = {};
+            document.querySelectorAll(
+                'button[data-analytics-id*="toggleLm"], button[data-analytics-id*="toggleFolder"]'
+            ).forEach(btn => {
+                const li = btn.closest('.content-list-item');
+                if (li) {
+                    const id = li.getAttribute('data-content-id');
+                    if (id) containerMap[id] = btn.textContent.trim();
+                }
+            });
+
             function extractItem(item) {
                 // content_type from svg[aria-label] [STABLE]
                 const svg = item.querySelector('svg[aria-label]');
@@ -567,26 +580,13 @@ class BlackboardScraper:
                 const timeEl = searchRoot.querySelector('time[datetime]');
                 const time_datetime = timeEl ? (timeEl.getAttribute('datetime') || '') : '';
 
-                // parent_container: walk up ancestors to find the nearest content-list-item
-                // whose type is exactly "Learning Module" or "Folder" (best-effort, [FRAGILE]).
-                // Non-container ancestors (Text Document, PDF, Link, etc.) are skipped so
-                // only real expandable containers are used.
-                // Returns empty string if no valid container ancestor exists.
+                // parent_container: look up the item's immediate .content-list-item ancestor
+                // in the pre-built containerMap using its data-content-id.
                 let parent_container = '';
-                let ancestor = item.parentElement;
-                while (ancestor && ancestor !== document.body) {
-                    if (ancestor.classList && ancestor.classList.contains('content-list-item')) {
-                        const pSvg = ancestor.querySelector('svg[aria-label]');
-                        const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
-                        const hasChildList = ancestor.querySelector('.content-list') || ancestor.querySelector(':scope > div > .content-list-item, :scope .MuiCollapse-root .content-list-item');
-                        if ((pType === 'Learning Module' || pType === 'Folder' || pType === 'Open Folder') && hasChildList) {
-                            const toggleBtn = ancestor.querySelector('button[data-analytics-id*="toggleLm"], button[data-analytics-id*="toggleFolder"]');
-                            parent_container = toggleBtn ? toggleBtn.textContent.trim() : '';
-                            break;  // found a valid container — stop
-                        }
-                        // Non-container content-list-item (e.g. Text Document, PDF) — keep walking up
-                    }
-                    ancestor = ancestor.parentElement;
+                const parentItem = item.parentElement?.closest('.content-list-item');
+                if (parentItem) {
+                    const parentId = parentItem.getAttribute('data-content-id');
+                    parent_container = (parentId && containerMap[parentId]) ? containerMap[parentId] : '';
                 }
 
                 // is_nested: true when the item is inside another .content-list-item ancestor
