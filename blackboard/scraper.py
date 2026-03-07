@@ -580,24 +580,10 @@ class BlackboardScraper:
                         const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
                         const hasChildList = ancestor.querySelector('.content-list');
                         if ((pType === 'Learning Module' || pType === 'Folder' || pType === 'Open Folder') && hasChildList) {
-                            // Find the container's own title link — must NOT be inside a nested .content-list
-                            const candidates = ancestor.querySelectorAll(
-                                'a[data-analytics-id*="assessment"], a[class*="contentItemTitle"], a'
-                            );
-                            let pLink = null;
-                            for (const link of candidates) {
-                                let el = link.parentElement;
-                                let isNested = false;
-                                while (el && el !== ancestor) {
-                                    if (el.classList && el.classList.contains('content-list')) {
-                                        isNested = true;
-                                        break;
-                                    }
-                                    el = el.parentElement;
-                                }
-                                if (!isNested) { pLink = link; break; }
-                            }
-                            parent_container = pLink ? (pLink.textContent || '').trim() : '';
+                            // Clone ancestor, strip nested .content-list subtrees, use remaining text
+                            const clone = ancestor.cloneNode(true);
+                            clone.querySelectorAll('.content-list').forEach(el => el.remove());
+                            parent_container = clone.textContent.trim();
                             break;  // found a valid container — stop
                         }
                         // Non-container content-list-item (e.g. Text Document, PDF) — keep walking up
