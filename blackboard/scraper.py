@@ -580,7 +580,7 @@ class BlackboardScraper:
                         const pSvg = ancestor.querySelector('svg[aria-label]');
                         const pType = pSvg ? (pSvg.getAttribute('aria-label') || '') : '';
                         const hasChildList = ancestor.querySelector('.content-list');
-                        if ((pType === 'Learning Module' || pType === 'Folder') && hasChildList) {
+                        if ((pType === 'Learning Module' || pType === 'Folder' || pType === 'Open Folder') && hasChildList) {
                             const pLink = ancestor.querySelector(
                                 'a[data-analytics-id*="assessment"], a[class*="contentItemTitle"], a'
                             );
@@ -614,7 +614,7 @@ class BlackboardScraper:
     # Content types that act as containers for sequential tracking.
     # When one of these is encountered in list order it becomes the active
     # container_name for all subsequent items until the next container.
-    _MODULE_CONTAINER_TYPES = {"Learning Module", "Folder"}
+    _MODULE_CONTAINER_TYPES = {"Learning Module", "Folder", "Open Folder"}
 
     def _build_content_objects(self, course_info: dict, raw_items: list[dict]) -> list[dict]:
         """
@@ -660,13 +660,14 @@ class BlackboardScraper:
                     )
 
                 # Sequential container tracking:
-                #   A Learning Module or Folder item becomes the active container;
-                #   all following items are assigned to it until the next container.
+                #   A Learning Module, Folder, or Open Folder item becomes the active
+                #   container; all following items are assigned to it until the next
+                #   container. Container items themselves are not emitted as content.
                 if content_type in self._MODULE_CONTAINER_TYPES:
                     current_container = title
-                    container_name = None   # the container itself has no parent
-                else:
-                    container_name = current_container
+                    continue  # containers are structural — skip emitting
+
+                container_name = current_container
 
                 url      = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
                 due_date = self._normalize_date(time_datetime) if time_datetime else None
