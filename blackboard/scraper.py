@@ -323,6 +323,7 @@ class BlackboardScraper:
             self._expand_all_modules(page, content_url)
             self._expand_all_folders(page, content_url)
             self._stabilize_course_page(page)
+            self._stabilize_item_count(page)
 
             # Save post-expansion HTML for the first course to aid debugging
             if not self._debug_course_saved:
@@ -512,6 +513,28 @@ class BlackboardScraper:
             pass
         total = page.locator("div.content-list-item").count()
         print(f"    [STABILIZED] div.content-list-item total: {total}", flush=True)
+
+    def _stabilize_item_count(self, page: Page):
+        """
+        Poll div.content-list-item count every 2 seconds until it stops
+        changing for 3 consecutive checks. Ensures React has finished mounting
+        all items before extraction begins.
+        """
+        print("    [DEBUG] Waiting for div.content-list-item count to stabilize...", flush=True)
+        prev_count = -1
+        stable_rounds = 0
+        for i in range(20):
+            count = page.locator("div.content-list-item").count()
+            print(f"    [ITEM_COUNT] check={i} count={count} stable_rounds={stable_rounds}", flush=True)
+            if count == prev_count:
+                stable_rounds += 1
+                if stable_rounds >= 3:
+                    print(f"    [ITEM_COUNT] Stable at {count} item(s) after {i + 1} check(s).", flush=True)
+                    break
+            else:
+                stable_rounds = 0
+            prev_count = count
+            time.sleep(POLL_INTERVAL_SECONDS)
 
     def _extract_modules_and_items(self, page: Page) -> list[dict]:
         """
