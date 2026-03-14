@@ -108,7 +108,6 @@ class BlackboardScraper:
                     timeout=PAGE_LOAD_TIMEOUT_MS,
                 )
                 print(f"[OK] '{TERM_FILTER}' term group detected.")
-                time.sleep(3)  # give React extra time to mount course cards
 
                 # Harvested during scrolling: id -> name (dict keys are the dedup set).
                 # setdefault keeps the first-seen name for each ID.
@@ -497,7 +496,7 @@ class BlackboardScraper:
     }
 }
 """)
-            time.sleep(2.5)
+            time.sleep(1.5)
             height = page.evaluate("""
 () => {
     const main = document.querySelector('[role="main"]') || document.querySelector('main');
