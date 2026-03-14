@@ -497,7 +497,7 @@ class BlackboardScraper:
     }
 }
 """)
-            time.sleep(1.5)
+            time.sleep(2.5)
             height = page.evaluate("""
 () => {
     const main = document.querySelector('[role="main"]') || document.querySelector('main');
@@ -507,7 +507,7 @@ class BlackboardScraper:
             print(f"    [SCROLL] iter={i} prev_height={prev_height} height={height} stable_count={stable_count}", flush=True)
             if height == prev_height:
                 stable_count += 1
-                if stable_count >= 2:
+                if stable_count >= 3:
                     break
             else:
                 stable_count = 0
