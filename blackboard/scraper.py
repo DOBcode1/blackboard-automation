@@ -108,6 +108,7 @@ class BlackboardScraper:
                     timeout=PAGE_LOAD_TIMEOUT_MS,
                 )
                 print(f"[OK] '{TERM_FILTER}' term group detected.")
+                time.sleep(3)  # give React extra time to mount course cards
 
                 # Harvested during scrolling: id -> name (dict keys are the dedup set).
                 # setdefault keeps the first-seen name for each ID.
@@ -115,8 +116,13 @@ class BlackboardScraper:
                 prev_height   = -1
                 prev_count    = -1
                 stable_rounds = 0
+                scroll_start  = time.time()
 
                 while True:
+                    if time.time() - scroll_start > 60:
+                        print(f"[WARNING] Scroll loop timed out after 60 seconds; proceeding with {len(course_snapshot)} courses collected so far.")
+                        break
+
                     # Advance incrementally so each virtualized window mounts.
                     scroll_result = page.evaluate("""
 () => {
