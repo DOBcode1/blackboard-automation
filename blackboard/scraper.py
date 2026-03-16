@@ -608,6 +608,14 @@ class BlackboardScraper:
                 const timeEl = searchRoot.querySelector('time[datetime]');
                 const time_datetime = timeEl ? (timeEl.getAttribute('datetime') || '') : '';
 
+                // description: plain text inside .js-description
+                const descEl = item.querySelector('.js-description');
+                const description = descEl ? (descEl.textContent || '').trim() : '';
+
+                // subtext: grade/due info inside [class*="gradeInfo"]
+                const gradeInfoEl = item.querySelector('[class*="gradeInfo"]');
+                const subtext = gradeInfoEl ? (gradeInfoEl.textContent || '').trim() : '';
+
                 // parent_container: look up the item's immediate .content-list-item ancestor
                 // in the pre-built containerMap using its data-content-id.
                 let parent_container = '';
@@ -621,7 +629,7 @@ class BlackboardScraper:
                 const closestItem = item.parentElement?.closest('.content-list-item');
                 const is_nested = closestItem !== null && closestItem !== undefined;
 
-                return { content_type, title, href, time_datetime, parent_container, is_nested };
+                return { content_type, title, href, time_datetime, description, subtext, parent_container, is_nested };
             }
 
             return Array.from(document.querySelectorAll('div.content-list-item'))
@@ -680,6 +688,8 @@ class BlackboardScraper:
                 title            = (item.get("title") or "").strip()
                 href             = item.get("href", "")
                 time_datetime    = item.get("time_datetime", "")
+                description      = (item.get("description") or "").strip()
+                subtext          = (item.get("subtext") or "").strip()
                 parent_container = (item.get("parent_container") or "").strip()
                 is_nested        = item.get("is_nested", False)
 
@@ -713,6 +723,12 @@ class BlackboardScraper:
                 url      = f"{BASE_URL}{href}" if href.startswith("/") else href or course_url
                 due_date = self._normalize_date(time_datetime) if time_datetime else None
 
+                # Fallback: parse due date from subtext (e.g. "Due date: 1/21/26")
+                if due_date is None and subtext:
+                    m = re.search(r"[Dd]ue\s*[Dd]ate:?\s*(\d{1,2}/\d{1,2}/\d{2,4})", subtext)
+                    if m:
+                        due_date = self._parse_due_text(m.group(1))
+
                 content_objects.append({
                     "course_name":    course_name,
                     "course_id":      course_id,
@@ -722,6 +738,8 @@ class BlackboardScraper:
                     "url":            url,
                     "due_date":       due_date,
                     "due_date_raw":   time_datetime or None,
+                    "description":    description or None,
+                    "subtext":        subtext or None,
                 })
 
             except Exception as e:
@@ -777,6 +795,7 @@ class BlackboardScraper:
             "%b %d, %Y",
             "%B %d, %Y",
             "%m/%d/%Y",
+            "%m/%d/%y",
             "%Y-%m-%d",
         ]
         for fmt in formats:
