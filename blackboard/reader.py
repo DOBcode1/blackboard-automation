@@ -329,6 +329,7 @@ class BlackboardReader:
         content_type = item.get("content_type", "")
         title = item.get("title", "")
 
+        page.goto("about:blank")
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         self._verify_navigation(page, "/outline/file/")
 
@@ -397,6 +398,7 @@ class BlackboardReader:
         url = item["url"]
         title = item.get("title", "")
 
+        page.goto("about:blank")
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         self._verify_navigation(page, "/outline/edit/document/")
         self._wait_for_heading(page, title)
@@ -409,29 +411,10 @@ class BlackboardReader:
         if iframe_el:
             return self._read_file_item(page, item)
 
-        # Extract inline document content — try specific selectors only
+        # Extract inline document content from Quill rich text editor
         text = page.evaluate("""() => {
-            // Some inline docs use js-description
-            const descEl = document.querySelector('div.js-description');
-            if (descEl) {
-                const t = descEl.textContent.trim();
-                if (t) return t;
-            }
-
-            // Content item description area (hashed class)
-            const descItem = document.querySelector('[class*="contentItemDescription"]');
-            if (descItem) {
-                const t = descItem.textContent.trim();
-                if (t) return t;
-            }
-
-            // Document content area
-            const docContent = document.querySelector('[class*="documentContent"]');
-            if (docContent) {
-                const t = docContent.textContent.trim();
-                if (t) return t;
-            }
-
+            const el = document.querySelector('.ql-editor.bb-editor');
+            if (el) return el.textContent.trim();
             return '';
         }""")
 
@@ -456,6 +439,7 @@ class BlackboardReader:
         url = item["url"]
         title = item.get("title", "")
 
+        page.goto("about:blank")
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         self._verify_navigation(page, "/outline/assessment/")
         self._wait_for_heading(page, title)
@@ -503,6 +487,7 @@ class BlackboardReader:
         url = item["url"]
         title = item.get("title", "")
 
+        page.goto("about:blank")
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
         self._verify_navigation(page, "/outline/discussion/")
 
@@ -510,20 +495,9 @@ class BlackboardReader:
         time.sleep(3)
 
         text = page.evaluate("""() => {
-            // Look for the discussion topic content
-            const topicEl = document.querySelector(
-                '[class*="discussion-topic"], [class*="topicBody"], [data-testid*="topic"]'
-            );
+            // Topic text is in the Quill editor with contenteditable="false"
+            const topicEl = document.querySelector('.ql-editor[contenteditable="false"]');
             if (topicEl) return topicEl.textContent.trim();
-
-            // Fallback: grab main content, excluding participant list
-            const main = document.querySelector('[role="main"]') || document.querySelector('main');
-            if (main) {
-                const clone = main.cloneNode(true);
-                clone.querySelectorAll('[class*="participant"], [class*="Participation"]').forEach(el => el.remove());
-                return clone.textContent.trim();
-            }
-
             return '';
         }""")
 
