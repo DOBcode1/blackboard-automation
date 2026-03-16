@@ -374,19 +374,32 @@ class BlackboardReader:
         # Wait for content to render
         time.sleep(3)
 
-        # Extract main content text — try multiple selectors
-        text = page.evaluate("""() => {
-            // Try the document editor content area first
-            const editor = document.querySelector('[data-placeholder], .ql-editor, [contenteditable]');
-            if (editor && editor.textContent.trim()) return editor.textContent.trim();
+        # Check for a document viewer iframe first — defer to file handler if present
+        iframe_el = page.query_selector('iframe[src*="bbcswebdav"], iframe[src*="doc-viewer"]')
+        if iframe_el:
+            return self._read_file_item(page, item)
 
-            // Try the main content area
-            const main = document.querySelector('[role="main"]') || document.querySelector('main');
-            if (main) {
-                // Remove navigation, headers, and sidebar elements
-                const clone = main.cloneNode(true);
-                clone.querySelectorAll('nav, header, [role="navigation"], [class*="sidebar"]').forEach(el => el.remove());
-                return clone.textContent.trim();
+        # Extract inline document content — try specific selectors only
+        text = page.evaluate("""() => {
+            // Some inline docs use js-description
+            const descEl = document.querySelector('div.js-description');
+            if (descEl) {
+                const t = descEl.textContent.trim();
+                if (t) return t;
+            }
+
+            // Content item description area (hashed class)
+            const descItem = document.querySelector('[class*="contentItemDescription"]');
+            if (descItem) {
+                const t = descItem.textContent.trim();
+                if (t) return t;
+            }
+
+            // Document content area
+            const docContent = document.querySelector('[class*="documentContent"]');
+            if (docContent) {
+                const t = docContent.textContent.trim();
+                if (t) return t;
             }
 
             return '';
@@ -422,25 +435,18 @@ class BlackboardReader:
             const parts = [];
 
             // Description
-            const descEl = document.querySelector('[class*="description"], [data-testid*="description"]');
-            if (descEl) parts.push('Description: ' + descEl.textContent.trim());
-
-            // Due date / details
-            const detailEls = document.querySelectorAll('[class*="detail"], [class*="dueDate"], [class*="due-date"]');
-            detailEls.forEach(el => {
-                const text = el.textContent.trim();
-                if (text) parts.push(text);
-            });
-
-            // Instructions (if visible without clicking "View instructions")
-            const instrEl = document.querySelector('[class*="instructions"]');
-            if (instrEl) parts.push('Instructions: ' + instrEl.textContent.trim());
-
-            // Fallback: grab all text from the main content area
-            if (parts.length === 0) {
-                const main = document.querySelector('[role="main"]') || document.querySelector('main');
-                if (main) parts.push(main.textContent.trim());
+            const descEl = document.querySelector('div.js-description');
+            if (descEl) {
+                const t = descEl.textContent.trim();
+                if (t) parts.push('Description: ' + t);
             }
+
+            // Due date / grade details
+            const detailEls = document.querySelectorAll('[class*="gradeDetail"], [class*="gradeInfo"]');
+            detailEls.forEach(el => {
+                const t = el.textContent.trim();
+                if (t) parts.push(t);
+            });
 
             return parts.join('\\n');
         }""")
