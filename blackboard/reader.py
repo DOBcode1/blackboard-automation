@@ -286,6 +286,33 @@ class BlackboardReader:
             )
 
     # -----------------------------------------------------------------------
+    # NAVIGATION HELPERS
+    # -----------------------------------------------------------------------
+
+    def _verify_navigation(self, page: Page, expected_path: str):
+        """Wait for networkidle, then verify current URL contains expected_path.
+        If not, waits 2 more seconds and checks again. Logs a warning if still wrong."""
+        page.wait_for_load_state("networkidle")
+        if expected_path not in page.url:
+            time.sleep(2)
+            if expected_path not in page.url:
+                print(f"    [WARN] URL mismatch: expected path '{expected_path}' not in '{page.url}'")
+
+    def _wait_for_heading(self, page: Page, title: str, timeout_ms: int = 10_000):
+        """Wait until an h1 or [role='heading'] element containing title text appears."""
+        try:
+            page.wait_for_function(
+                "(title) => {"
+                "  const headings = document.querySelectorAll('h1, [role=\"heading\"]');"
+                "  return Array.from(headings).some(h => h.textContent.includes(title));"
+                "}",
+                arg=title,
+                timeout=timeout_ms,
+            )
+        except PlaywrightTimeoutError:
+            print(f"    [WARN] Heading not found for: {title}")
+
+    # -----------------------------------------------------------------------
     # FILE ITEMS (PDF, DOCX, PPTX via iframe react-pdf viewer)
     # -----------------------------------------------------------------------
 
@@ -303,6 +330,7 @@ class BlackboardReader:
         title = item.get("title", "")
 
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        self._verify_navigation(page, "/outline/file/")
 
         # Wait for the iframe containing the document viewer
         try:
@@ -370,6 +398,8 @@ class BlackboardReader:
         title = item.get("title", "")
 
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        self._verify_navigation(page, "/outline/edit/document/")
+        self._wait_for_heading(page, title)
 
         # Wait for content to render
         time.sleep(3)
@@ -427,6 +457,8 @@ class BlackboardReader:
         title = item.get("title", "")
 
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        self._verify_navigation(page, "/outline/assessment/")
+        self._wait_for_heading(page, title)
 
         # Wait for the assessment panel to render
         time.sleep(3)
@@ -472,6 +504,7 @@ class BlackboardReader:
         title = item.get("title", "")
 
         page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        self._verify_navigation(page, "/outline/discussion/")
 
         # Wait for the discussion content to render
         time.sleep(3)
