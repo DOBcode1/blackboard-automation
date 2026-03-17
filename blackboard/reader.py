@@ -450,19 +450,23 @@ class BlackboardReader:
         text = page.evaluate("""() => {
             const parts = [];
 
-            // Description
-            const descEl = document.querySelector('div.js-description');
-            if (descEl) {
-                const t = descEl.textContent.trim();
-                if (t) parts.push('Description: ' + t);
+            const dueDateEl = document.querySelector('.js-due-date');
+            if (dueDateEl) {
+                const t = dueDateEl.textContent.trim();
+                if (t) parts.push(t);
             }
 
-            // Due date / grade details
-            const detailEls = document.querySelectorAll('[class*="gradeDetail"], [class*="gradeInfo"]');
-            detailEls.forEach(el => {
-                const t = el.textContent.trim();
+            const attemptsEl = document.querySelector('.overview-attempts-section');
+            if (attemptsEl) {
+                const t = attemptsEl.textContent.trim();
                 if (t) parts.push(t);
-            });
+            }
+
+            const descEl = document.querySelector('.ql-editor.bb-editor');
+            if (descEl) {
+                const t = descEl.textContent.trim();
+                if (t) parts.push(t);
+            }
 
             return parts.join('\\n');
         }""")
