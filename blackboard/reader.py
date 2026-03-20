@@ -60,6 +60,8 @@ LOGIN_TIMEOUT_SECONDS = 600
 PAGE_LOAD_TIMEOUT_MS = 15_000
 IFRAME_LOAD_TIMEOUT_MS = 20_000
 TEXT_LAYER_WAIT_MS = 10_000
+CONSECUTIVE_ERROR_THRESHOLD = 3
+MAX_ITEM_RETRIES = 2
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +75,7 @@ class BlackboardReader:
         self.output_path = output_path or self._default_output_path()
         self.data = self._load_input()
         self.results = self._load_or_init_results()
+        self._consecutive_errors = 0
 
     def _default_output_path(self) -> str:
         os.makedirs("output", exist_ok=True)
@@ -207,8 +210,12 @@ class BlackboardReader:
                     print(f"  {len(items)} item(s)")
 
                     for idx, item in enumerate(items):
-                        # Skip already-processed items (incremental)
-                        if item["read_status"] not in ("pending",):
+                        # Skip already-processed final states (incremental)
+                        status = item["read_status"]
+                        text_type_existing = item.get("text_type", "pending")
+                        if status in ("success", "skipped", "image_based"):
+                            continue
+                        if status == "no_text" and text_type_existing in ("image_based", "no_viewer"):
                             continue
 
                         title = item.get("title", "(untitled)")
@@ -228,27 +235,45 @@ class BlackboardReader:
 
                         print(f"  [{idx+1}/{len(items)}] {classification}: {title}")
 
-                        try:
-                            if classification == "file":
-                                text, text_type = self._read_file_item(page, item)
-                            elif classification == "document":
-                                text, text_type = self._read_document_item(page, item)
-                            elif classification == "assessment":
-                                text, text_type = self._read_assessment_item(page, item)
-                            elif classification == "discussion":
-                                text, text_type = self._read_discussion_item(page, item)
-                            else:
-                                text, text_type = None, "unknown"
+                        retries = 0
+                        while retries <= MAX_ITEM_RETRIES:
+                            try:
+                                if classification == "file":
+                                    text, text_type = self._read_file_item(page, item)
+                                elif classification == "document":
+                                    text, text_type = self._read_document_item(page, item)
+                                elif classification == "assessment":
+                                    text, text_type = self._read_assessment_item(page, item)
+                                elif classification == "discussion":
+                                    text, text_type = self._read_discussion_item(page, item)
+                                else:
+                                    text, text_type = None, "unknown"
 
-                            item["extracted_text"] = text
-                            item["text_type"] = text_type
-                            item["read_status"] = "success" if text else "no_text"
+                                item["extracted_text"] = text
+                                item["text_type"] = text_type
+                                item["read_status"] = "success" if text else "no_text"
+                                self._consecutive_errors = 0
+                                break
 
-                        except Exception as e:
-                            print(f"    [ERROR] {e}")
-                            item["extracted_text"] = None
-                            item["text_type"] = "error"
-                            item["read_status"] = "error"
+                            except Exception as e:
+                                self._consecutive_errors += 1
+                                print(f"    [ERROR] (attempt {retries+1}/{MAX_ITEM_RETRIES+1}) {e}")
+
+                                if self._consecutive_errors >= CONSECUTIVE_ERROR_THRESHOLD:
+                                    if not self._check_session_alive(page):
+                                        self._recover_session(page)
+                                        # Session recovery gives a free retry; don't charge retries
+                                        continue
+                                    else:
+                                        # Genuine item errors — reset streak
+                                        self._consecutive_errors = 0
+
+                                retries += 1
+                                if retries > MAX_ITEM_RETRIES:
+                                    print(f"    [ERROR] All retries exhausted for: {title}")
+                                    item["extracted_text"] = None
+                                    item["text_type"] = "error"
+                                    item["read_status"] = "error"
 
                         self._save_results()
 
@@ -259,6 +284,42 @@ class BlackboardReader:
 
             finally:
                 browser.close()
+
+    # -----------------------------------------------------------------------
+    # SESSION HEALTH
+    # -----------------------------------------------------------------------
+
+    def _check_session_alive(self, page: Page) -> bool:
+        """Return True if the session is still authenticated, False if redirected to login."""
+        try:
+            page.goto(BASE_URL + "/ultra/course", wait_until="domcontentloaded", timeout=15000)
+            time.sleep(2)
+            return "/ultra/" in page.url
+        except Exception:
+            return False
+
+    def _recover_session(self, page: Page):
+        """Block until the user re-logs in after session expiry."""
+        print()
+        print("=" * 60)
+        print("  SESSION EXPIRED — Manual re-login required")
+        print("=" * 60)
+        page.goto(LOGIN_URL)
+
+        if "/ultra/" in page.url:
+            print("[OK] Already on /ultra/ after navigation. Resuming...")
+            self._consecutive_errors = 0
+            return
+
+        print(f"Waiting for re-login (up to {LOGIN_TIMEOUT_SECONDS}s)...")
+        try:
+            page.wait_for_url("**/ultra/**", timeout=LOGIN_TIMEOUT_SECONDS * 1000)
+            print("[OK] Re-login detected. Resuming...")
+            self._consecutive_errors = 0
+        except PlaywrightTimeoutError:
+            raise TimeoutError(
+                f"Re-login not detected within {LOGIN_TIMEOUT_SECONDS}s."
+            )
 
     # -----------------------------------------------------------------------
     # LOGIN (same as scraper)
@@ -421,8 +482,103 @@ class BlackboardReader:
         text = (text or "").strip()
 
         if not text:
-            print(f"    [WARN] No text found for inline document: {title}")
-            return None, "no_text"
+            # --- Attachment fallback ---
+            # Some /edit/document/ pages contain file attachments instead of inline text.
+            # Look for the "Preview file" expand buttons next to each attached file.
+            attach_buttons = page.query_selector_all('button[title="Preview file"]')
+            if not attach_buttons:
+                attach_buttons = page.query_selector_all('button[aria-label*="Preview File"]')
+
+            if not attach_buttons:
+                print(f"    [WARN] No text found for inline document: {title}")
+                return None, "no_text"
+
+            print(f"    [INFO] Found {len(attach_buttons)} file attachment(s), expanding to extract...")
+
+            attachment_results: list[str] = []
+            any_text = False
+
+            for btn in attach_buttons:
+                # Determine filename from aria-label or nearby fileText span
+                aria_label = btn.get_attribute("aria-label") or ""
+                if aria_label.startswith("Preview File "):
+                    filename = aria_label[len("Preview File "):]
+                else:
+                    # Try nearby span with class containing "fileText"
+                    span = btn.query_selector('xpath=..//*[contains(@class,"fileText")]')
+                    if not span:
+                        # Walk up one level and search siblings
+                        span = page.evaluate("""(btn) => {
+                            const parent = btn.closest('[class*="fileText"]') ||
+                                           btn.parentElement?.querySelector('[class*="fileText"]');
+                            return parent ? parent.textContent.trim() : null;
+                        }""", btn)
+                        filename = span if isinstance(span, str) else "attachment"
+                    else:
+                        filename = (span.text_content() or "attachment").strip()
+
+                # Click to expand the inline file viewer
+                btn.click()
+                time.sleep(2)
+
+                # Wait for the inline preview iframe
+                iframe_sel = 'div[class*="js-file-viewer-inline-preview"] iframe, iframe[id^="file-preview-"]'
+                try:
+                    page.wait_for_selector(iframe_sel, timeout=15_000)
+                except PlaywrightTimeoutError:
+                    print(f"    [WARN] Inline preview iframe did not appear for: {filename}")
+                    attachment_results.append(f"--- {filename} --- [preview iframe not found]")
+                    continue
+
+                iframe_el = page.query_selector(iframe_sel)
+                if not iframe_el:
+                    attachment_results.append(f"--- {filename} --- [preview iframe not found]")
+                    continue
+
+                frame = iframe_el.content_frame()
+                if not frame:
+                    attachment_results.append(f"--- {filename} --- [could not access iframe frame]")
+                    continue
+
+                # Wait for PDF text layers to render inside the iframe
+                try:
+                    frame.wait_for_selector(
+                        '.textLayer, .react-pdf_Page__textContent',
+                        timeout=TEXT_LAYER_WAIT_MS,
+                    )
+                except PlaywrightTimeoutError:
+                    if filename.lower().endswith(".pdf"):
+                        attachment_results.append(f"--- {filename} --- [image-based, no text layer]")
+                    else:
+                        attachment_results.append(f"--- {filename} --- [no text layer]")
+                    continue
+
+                # Extra wait for all pages to finish rendering
+                time.sleep(2)
+
+                attach_text = frame.evaluate("""() => {
+                    const layers = document.querySelectorAll('.textLayer, .react-pdf_Page__textContent');
+                    return Array.from(layers).map(l => l.textContent).join('\\n\\n');
+                }""")
+                attach_text = (attach_text or "").strip()
+
+                if not attach_text:
+                    if filename.lower().endswith(".pdf"):
+                        attachment_results.append(f"--- {filename} --- [image-based, no text layer]")
+                    else:
+                        attachment_results.append(f"--- {filename} --- [no text]")
+                else:
+                    attachment_results.append(f"--- {filename} ---\n{attach_text}")
+                    any_text = True
+
+            joined = "\n\n".join(attachment_results)
+
+            if any_text:
+                print(f"    [OK] Extracted attachment text ({len(joined)} chars) from {title}")
+                return joined, "extracted"
+            else:
+                print(f"    [WARN] All attachments were image-based or empty for: {title}")
+                return None, "image_based"
 
         print(f"    [OK] Extracted {len(text)} chars from {title}")
         return text, "extracted"
