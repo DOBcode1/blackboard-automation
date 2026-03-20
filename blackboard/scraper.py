@@ -40,6 +40,8 @@ TERM_FILTER = "Spring 2026"
 LOGIN_TIMEOUT_SECONDS = 600     # 10 minutes for manual login
 PAGE_LOAD_TIMEOUT_MS = 15_000   # 15s for SPA content to appear
 POLL_INTERVAL_SECONDS = 2
+CONSECUTIVE_ERROR_THRESHOLD = 3
+MAX_COURSE_RETRIES = 2
 
 
 # ---------------------------------------------------------------------------
@@ -83,6 +85,7 @@ class BlackboardScraper:
     def __init__(self):
         self.base_url = BASE_URL
         self._debug_course_saved = False
+        self._consecutive_errors = 0
         self.results = {
             "extracted_at": "",
             "term": TERM_FILTER,
@@ -195,9 +198,29 @@ class BlackboardScraper:
                 )
 
                 for course_info in course_links:
-                    course_data = self._scrape_course(page, course_info)
-                    self.results["courses"].append(course_data)
-                    self.results["total_content_objects"] += course_data["item_count"]
+                    retries = 0
+                    while True:
+                        try:
+                            course_data = self._scrape_course(page, course_info)
+                            self.results["courses"].append(course_data)
+                            self.results["total_content_objects"] += course_data["item_count"]
+                            self._consecutive_errors = 0
+                            break
+                        except Exception as e:
+                            self._consecutive_errors += 1
+                            print(f"  [ERROR] Course '{course_info['course_name']}' "
+                                  f"(attempt {retries + 1}/{MAX_COURSE_RETRIES + 1}): {e}")
+
+                            if self._consecutive_errors >= CONSECUTIVE_ERROR_THRESHOLD:
+                                if not self._check_session_alive(page):
+                                    self._recover_session(page)
+                                else:
+                                    self._consecutive_errors = 0
+
+                            retries += 1
+                            if retries > MAX_COURSE_RETRIES:
+                                print(f"  [SKIP] Giving up on '{course_info['course_name']}' after {retries} attempt(s).")
+                                break
 
                 output_path = self._write_output()
                 print(f"\nDone. {self.results['total_content_objects']} content object(s) "
@@ -205,6 +228,42 @@ class BlackboardScraper:
 
             finally:
                 browser.close()
+
+    # -----------------------------------------------------------------------
+    # SESSION HEALTH
+    # -----------------------------------------------------------------------
+
+    def _check_session_alive(self, page: Page) -> bool:
+        """Return True if the session is still authenticated, False if redirected to login."""
+        try:
+            page.goto(BASE_URL + "/ultra/course", wait_until="domcontentloaded", timeout=15000)
+            time.sleep(2)
+            return "/ultra/" in page.url
+        except Exception:
+            return False
+
+    def _recover_session(self, page: Page):
+        """Block until the user re-logs in after session expiry."""
+        print()
+        print("=" * 60)
+        print("  SESSION EXPIRED — Manual re-login required")
+        print("=" * 60)
+        page.goto(LOGIN_URL)
+
+        if "/ultra/" in page.url:
+            print("[OK] Already on /ultra/ after navigation. Resuming...")
+            self._consecutive_errors = 0
+            return
+
+        print(f"Waiting for re-login (up to {LOGIN_TIMEOUT_SECONDS}s)...")
+        try:
+            page.wait_for_url("**/ultra/**", timeout=LOGIN_TIMEOUT_SECONDS * 1000)
+            print("[OK] Re-login detected. Resuming...")
+            self._consecutive_errors = 0
+        except PlaywrightTimeoutError:
+            raise TimeoutError(
+                f"Re-login not detected within {LOGIN_TIMEOUT_SECONDS}s."
+            )
 
     # -----------------------------------------------------------------------
     # LOGIN
