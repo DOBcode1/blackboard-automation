@@ -383,6 +383,7 @@ class BlackboardScraper:
 
         try:
             self._open_course_outline(page, content_url)
+            self._dismiss_overlays(page)
             self._load_all_hidden_items(page)
             self._expand_all_modules(page, content_url)
             self._expand_all_folders(page, content_url)
@@ -396,8 +397,8 @@ class BlackboardScraper:
 
             print(f"    [DEBUG] URL after expand:  {page.url}", flush=True)
 
-            raw_items = self._extract_modules_and_items(page)
-            content_objects = self._build_content_objects(course_info, raw_items)
+            raw_items, container_ids = self._extract_modules_and_items(page)
+            content_objects = self._build_content_objects(course_info, raw_items, container_ids)
             course_data["content_objects"] = content_objects
             course_data["item_count"] = len(content_objects)
 
@@ -411,6 +412,32 @@ class BlackboardScraper:
     # -----------------------------------------------------------------------
     # COURSE PAGE HELPERS
     # -----------------------------------------------------------------------
+
+    def _dismiss_overlays(self, page: Page):
+        """
+        Dismiss announcement modals and popover/context menus that can block clicks.
+
+        Tries a series of close-button selectors for announcement modals (first match
+        wins), then presses Escape to collapse any open popover menus.
+        """
+        _ANNOUNCEMENT_CLOSE_SELECTORS = [
+            'button[aria-label="Close Announcements"]',
+            'div[class*="Announcement"] button[aria-label="Close"]',
+            'button:has(svg[data-testid="CloseIcon"])',
+            'button[aria-label="Close"]',
+        ]
+        for selector in _ANNOUNCEMENT_CLOSE_SELECTORS:
+            try:
+                btn = page.locator(selector).first
+                if btn.is_visible(timeout=500):
+                    btn.click(force=True)
+                    time.sleep(0.5)
+                    break
+            except Exception:
+                pass
+
+        page.keyboard.press("Escape")
+        time.sleep(0.3)
 
     def _open_course_outline(self, page: Page, course_url: str):
         """Navigate to the course outline URL and wait for the content list to render."""
@@ -429,14 +456,20 @@ class BlackboardScraper:
 
     def _load_all_hidden_items(self, page: Page):
         """
-        Scroll to trigger lazy rendering, then click all 'Load more' buttons
-        until no enabled ones remain.
+        Ensure all content-list-items are rendered before extraction.
 
-        An initial wheel scroll is needed to force React to mount items that
-        are below the visible fold before the load-more buttons appear.
-        Clicks are serialized (one at a time) because Angular re-renders the
-        list after each click, which invalidates pre-collected locators.
+        Phase 1 — wheel scroll + load-more buttons:
+          An initial wheel scroll forces React to mount items below the visible
+          fold so load-more buttons appear. Clicks are serialized because Angular
+          re-renders the list after each click, invalidating pre-collected locators.
+
+        Phase 2 — scroll-based lazy loading:
+          Some courses render content purely through scrolling with no load-more
+          button. Scroll the main content area in 800px increments and keep going
+          as long as the div.content-list-item count keeps rising. Stop after 3
+          consecutive scrolls with no new items, or after 30 iterations.
         """
+        # Phase 1: wheel priming + load-more buttons
         for _ in range(15):
             page.mouse.wheel(0, 500)
             time.sleep(0.2)
@@ -447,6 +480,26 @@ class BlackboardScraper:
                 break
             load_btns.first.click(force=True)
             time.sleep(1.5)
+
+        # Phase 2: scroll-based lazy loading (no load-more button)
+        prev_count = page.locator("div.content-list-item").count()
+        stable_rounds = 0
+        for i in range(30):
+            page.evaluate("""
+() => {
+    const main = document.querySelector('[role="main"]') || document.querySelector('main');
+    if (main) main.scrollBy(0, 800);
+}
+""")
+            time.sleep(1)
+            new_count = page.locator("div.content-list-item").count()
+            if new_count > prev_count:
+                stable_rounds = 0
+                prev_count = new_count
+            else:
+                stable_rounds += 1
+                if stable_rounds >= 3:
+                    break
 
     def _expand_all_modules(self, page: Page, course_url: str):
         """
@@ -468,6 +521,8 @@ class BlackboardScraper:
                 break
             print(f"    [DEBUG] Expanding {count} collapsed Learning Module(s), attempt {attempt + 1}...", flush=True)
             try:
+                page.keyboard.press("Escape")
+                time.sleep(0.3)
                 collapsed.first.click()
                 time.sleep(1)
             except Exception as e:
@@ -519,6 +574,8 @@ class BlackboardScraper:
 
             print(f"    [DEBUG] Expanding {count} collapsed Folder(s), attempt {attempt + 1}...", flush=True)
             try:
+                page.keyboard.press("Escape")
+                time.sleep(0.3)
                 collapsed.first.click()
                 time.sleep(1)
             except Exception as e:
@@ -617,8 +674,8 @@ class BlackboardScraper:
           a[data-analytics-id*="assessment"] — title link for graded items [STABLE]
           a[class*="contentItemTitle"]       — title fallback [FRAGILE — hashed class]
         """
-        raw_items: list[dict] = page.evaluate("""() => {
-            // Build a map of data-content-id → container name for all toggle buttons.
+        result: dict = page.evaluate("""() => {
+            // Pass 1: toggle-button approach (primary).
             // Covers both Learning Module (toggleLm) and Folder (toggleFolder) containers.
             const containerMap = {};
             document.querySelectorAll(
@@ -629,6 +686,29 @@ class BlackboardScraper:
                     const id = li.getAttribute('data-content-id');
                     if (id) containerMap[id] = btn.textContent.trim();
                 }
+            });
+
+            // Pass 2: structural approach — any content-list-item that contains a
+            // child div.content-list with at least one content-list-item is a container,
+            // regardless of its toggle button's analytics-id.
+            document.querySelectorAll('div.content-list-item').forEach(li => {
+                const id = li.getAttribute('data-content-id');
+                if (!id || containerMap[id]) return;  // already captured
+                const nested = li.querySelector('div.content-list > div.content-list-item');
+                if (!nested) return;
+                // Extract title using the same priority order as extractItem
+                let title = '';
+                const assessmentLink = li.querySelector('a[data-analytics-id*="assessment"]');
+                if (assessmentLink) title = (assessmentLink.textContent || '').trim();
+                if (!title) {
+                    const titleLink = li.querySelector('a[class*="contentItemTitle"]');
+                    if (titleLink) title = (titleLink.textContent || '').trim();
+                }
+                if (!title) {
+                    const generic = li.querySelector('a, [class*="title"], h3, h4');
+                    if (generic) title = (generic.textContent || '').trim();
+                }
+                if (title) containerMap[id] = title;
             });
 
             function extractItem(item) {
@@ -688,20 +768,26 @@ class BlackboardScraper:
                 const closestItem = item.parentElement?.closest('.content-list-item');
                 const is_nested = closestItem !== null && closestItem !== undefined;
 
-                return { content_type, title, href, time_datetime, description, subtext, parent_container, is_nested };
+                return { content_type, title, href, time_datetime, description, subtext, parent_container, is_nested,
+                         content_id: item.getAttribute('data-content-id') || '' };
             }
 
-            return Array.from(document.querySelectorAll('div.content-list-item'))
+            const items = Array.from(document.querySelectorAll('div.content-list-item'))
                 .map(item => extractItem(item));
+            return { items, containerIds: Object.keys(containerMap) };
         }""")
 
+        raw_items: list[dict] = result["items"]
+        container_ids: set[str] = set(result["containerIds"])
+
         print(f"    [DEBUG] {len(raw_items)} content-list-item(s) found after expand", flush=True)
+        print(f"    [DEBUG] {len(container_ids)} container id(s) detected: {sorted(container_ids)}", flush=True)
 
         # TEMP DEBUG: collect all distinct svg[aria-label] values before any filtering
         _svg_labels_seen = {d['content_type'] for d in raw_items if d['content_type']}
         print(f"    [DEBUG] distinct svg[aria-label] values: {sorted(_svg_labels_seen)}", flush=True)
 
-        return raw_items
+        return raw_items, container_ids
 
     # -----------------------------------------------------------------------
     # CONTENT OBJECT CONSTRUCTION
@@ -711,7 +797,8 @@ class BlackboardScraper:
     # Items of these types are structural — they are not emitted as content objects.
     _MODULE_CONTAINER_TYPES = {"Learning Module", "Folder", "Open Folder"}
 
-    def _build_content_objects(self, course_info: dict, raw_items: list[dict]) -> list[dict]:
+    def _build_content_objects(self, course_info: dict, raw_items: list[dict],
+                               container_ids: set[str] | None = None) -> list[dict]:
         """
         Convert every raw DOM item from _extract_modules_and_items into a
         self-contained content object.
@@ -722,8 +809,10 @@ class BlackboardScraper:
         Container assignment strategy (primary: sequential tracking; secondary: JS
         ancestor-walk via parent_container):
           - current_container tracks the most recently seen container item by title.
-          - When content_type is in _MODULE_CONTAINER_TYPES: record title as
-            current_container and skip emitting the item.
+          - An item is treated as a container when its content_type is in
+            _MODULE_CONTAINER_TYPES OR its data-content-id appears in container_ids
+            (the structurally-detected set from JS). This catches Learning Modules
+            whose svg aria-label differs from the expected string.
           - For non-container items: prefer parent_container (JS ancestor-walk) when
             non-empty; otherwise fall back to current_container.
           - When a non-container item has no JS parent_container AND is not nested
@@ -733,6 +822,9 @@ class BlackboardScraper:
         if not raw_items:
             print(f"    [INFO] No content items found on page.")
             return []
+
+        if container_ids is None:
+            container_ids = set()
 
         course_name = course_info["course_name"]
         course_id   = course_info["course_id"]
@@ -751,12 +843,17 @@ class BlackboardScraper:
                 subtext          = (item.get("subtext") or "").strip()
                 parent_container = (item.get("parent_container") or "").strip()
                 is_nested        = item.get("is_nested", False)
+                content_id       = item.get("content_id", "")
 
                 if not title:
                     continue  # unidentifiable item — skip
 
-                # Container items are structural: record them and skip emitting
-                if content_type in self._MODULE_CONTAINER_TYPES:
+                # Container items are structural: record them and skip emitting.
+                # Use both the type-name set and the structurally-detected id set
+                # so Learning Modules with unexpected aria-label values are caught.
+                is_container = (content_type in self._MODULE_CONTAINER_TYPES
+                                or bool(content_id and content_id in container_ids))
+                if is_container:
                     current_container = title
                     continue
 
