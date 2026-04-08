@@ -488,7 +488,7 @@ class BlackboardScraper:
             page.evaluate("""
 () => {
     const main = document.querySelector('[role="main"]') || document.querySelector('main');
-    if (main) main.scrollBy(0, 800);
+    if (main) main.scrollBy(0, 500);
 }
 """)
             time.sleep(1)
@@ -498,8 +498,19 @@ class BlackboardScraper:
                 prev_count = new_count
             else:
                 stable_rounds += 1
-                if stable_rounds >= 3:
+                if stable_rounds >= 5:
                     break
+
+        # Final forced scroll to the very bottom to catch any remaining items
+        page.evaluate("""
+() => {
+    const main = document.querySelector('[role="main"]') || document.querySelector('main');
+    if (main) main.scrollTop = main.scrollHeight;
+}
+""")
+        time.sleep(2)
+        final_count = page.locator("div.content-list-item").count()
+        print(f"    [DEBUG] Phase 2 final count after bottom scroll: {final_count}", flush=True)
 
     def _expand_all_modules(self, page: Page, course_url: str):
         """
@@ -523,11 +534,21 @@ class BlackboardScraper:
             try:
                 page.keyboard.press("Escape")
                 time.sleep(0.3)
-                collapsed.first.click()
+                collapsed.first.scroll_into_view_if_needed()
+                time.sleep(0.3)
+                collapsed.first.click(force=True)
                 time.sleep(1)
             except Exception as e:
                 print(f"    [WARN] Could not click learning module toggle: {e}", flush=True)
-                break
+                try:
+                    page.keyboard.press("Escape")
+                    time.sleep(0.5)
+                    page.locator("body").click(position={"x": 10, "y": 10}, force=True)
+                    time.sleep(0.5)
+                    collapsed = page.locator(LM_TOGGLE_SELECTOR)
+                    collapsed.first.click(force=True)
+                except Exception:
+                    break
 
             # Safety: if the click navigated away, go back to course outline
             if course_url and not page.url.rstrip("/").endswith("/outline"):
@@ -576,11 +597,23 @@ class BlackboardScraper:
             try:
                 page.keyboard.press("Escape")
                 time.sleep(0.3)
-                collapsed.first.click()
+                collapsed.first.scroll_into_view_if_needed()
+                time.sleep(0.3)
+                collapsed.first.click(force=True)
                 time.sleep(1)
             except Exception as e:
                 print(f"    [WARN] Could not click folder toggle: {e}", flush=True)
-                break
+                try:
+                    page.keyboard.press("Escape")
+                    time.sleep(0.5)
+                    page.locator("body").click(position={"x": 10, "y": 10}, force=True)
+                    time.sleep(0.5)
+                    collapsed = page.locator(FOLDER_ICON_TOGGLE)
+                    if collapsed.count() == 0:
+                        collapsed = page.locator(FOLDER_ANALYTICS_TOGGLE)
+                    collapsed.first.click(force=True)
+                except Exception:
+                    break
 
             # Safety: if the click navigated away, go back to course outline
             if course_url and not page.url.rstrip("/").endswith("/outline"):
@@ -709,6 +742,32 @@ class BlackboardScraper:
                     if (generic) title = (generic.textContent || '').trim();
                 }
                 if (title) containerMap[id] = title;
+            });
+
+            // Pass 3: broader structural detection — catches Learning Modules that use
+            // non-standard analytics-id patterns (e.g. International Internship course).
+            // Checks for nested content lists via learningModuleContainer, readonlyContentList,
+            // or any intermediate div wrapper, supplementing Pass 2's direct child check.
+            document.querySelectorAll('div.content-list-item').forEach(item => {
+                const id = item.getAttribute('data-content-id');
+                if (!id || containerMap[id]) return;
+                const nestedList = item.querySelector(
+                    ':scope > div > div > div.content-list, ' +
+                    'div[class*="learningModuleContainer"] .content-list, ' +
+                    'div[class*="readonlyContentList"]'
+                );
+                if (nestedList && nestedList.querySelector('.content-list-item')) {
+                    const titleEl = item.querySelector(
+                        'a[class*="contentItemTitle"], ' +
+                        'a[data-analytics-id*="document.link"], ' +
+                        'a[data-analytics-id*="toggleLm"], ' +
+                        'button[data-analytics-id*="toggleLm"], ' +
+                        'button[data-analytics-id*="toggleFolder"]'
+                    );
+                    if (titleEl) {
+                        containerMap[id] = titleEl.textContent.trim();
+                    }
+                }
             });
 
             function extractItem(item) {
