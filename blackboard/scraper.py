@@ -846,6 +846,53 @@ class BlackboardScraper:
         _svg_labels_seen = {d['content_type'] for d in raw_items if d['content_type']}
         print(f"    [DEBUG] distinct svg[aria-label] values: {sorted(_svg_labels_seen)}", flush=True)
 
+        # TEMP DEBUG: container selector diagnostics
+        debug_result = page.evaluate("""() => {
+    const debug = {};
+
+    // What the current containerMap finds
+    debug.toggleButtons = [];
+    document.querySelectorAll('button[data-analytics-id*="toggleLm"], button[data-analytics-id*="toggleFolder"]').forEach(btn => {
+        const li = btn.closest('.content-list-item');
+        debug.toggleButtons.push({
+            id: li ? li.getAttribute('data-content-id') : null,
+            text: btn.textContent.trim().substring(0, 40),
+            analyticsId: btn.getAttribute('data-analytics-id')
+        });
+    });
+
+    // All Learning Module SVGs
+    debug.learningModuleSvgs = [];
+    document.querySelectorAll('svg[aria-label="Learning Module"]').forEach(svg => {
+        const item = svg.closest('.content-list-item');
+        if (item) {
+            const id = item.getAttribute('data-content-id');
+            const titleEl = item.querySelector('a[class*="contentItemTitle"], a[data-analytics-id]');
+            debug.learningModuleSvgs.push({
+                id: id,
+                title: titleEl ? titleEl.textContent.trim().substring(0, 40) : '(none)'
+            });
+        }
+    });
+
+    // Items with nested content lists
+    debug.nestedContainers = [];
+    document.querySelectorAll('div.content-list-item').forEach(item => {
+        const nested = item.querySelector('.content-list');
+        if (nested && nested.querySelector('.content-list-item')) {
+            const id = item.getAttribute('data-content-id');
+            const titleEl = item.querySelector('a[class*="contentItemTitle"]');
+            debug.nestedContainers.push({
+                id: id,
+                title: titleEl ? titleEl.textContent.trim().substring(0, 40) : '(none)'
+            });
+        }
+    });
+
+    return debug;
+}""")
+        print(f"    [DEBUG-CONTAINERS] {json.dumps(debug_result, indent=2)}", flush=True)
+
         return raw_items, container_ids
 
     # -----------------------------------------------------------------------
