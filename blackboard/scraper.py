@@ -528,18 +528,43 @@ class BlackboardScraper:
             '[aria-expanded="false"]'
         )
 
+        clicked_ids: set[str] = set()
         for attempt in range(30):  # higher cap for deeply nested modules
-            collapsed = page.locator(LM_TOGGLE_SELECTOR)
-            count = collapsed.count()
-            if count == 0:
+            first_id: str | None = page.evaluate(
+                """(clickedIds) => {
+                    const buttons = Array.from(document.querySelectorAll(
+                        'button[data-analytics-id="course.learning.module.base.item.toggleLm.button"][aria-expanded="false"]'
+                    ));
+                    for (let i = 0; i < buttons.length; i++) {
+                        const item = buttons[i].closest('div.content-list-item');
+                        const id = item ? (item.getAttribute('data-content-id') || '__pos_' + i) : '__pos_' + i;
+                        if (!clickedIds.includes(id)) return id;
+                    }
+                    return null;
+                }""",
+                list(clicked_ids),
+            )
+            if first_id is None:
                 break
-            print(f"    [DEBUG] Expanding {count} collapsed Learning Module(s), attempt {attempt + 1}...", flush=True)
+
+            clicked_ids.add(first_id)
+            print(f"    [DEBUG] Expanding Learning Module {first_id!r}, attempt {attempt + 1}...", flush=True)
             try:
                 page.keyboard.press("Escape")
                 time.sleep(0.3)
-                collapsed.first.scroll_into_view_if_needed()
+                if first_id.startswith("__pos_"):
+                    btn = page.locator(LM_TOGGLE_SELECTOR)
+                else:
+                    btn = page.locator(
+                        f'div.content-list-item[data-content-id="{first_id}"] '
+                        f'button[data-analytics-id="course.learning.module.base.item.toggleLm.button"]'
+                        f'[aria-expanded="false"]'
+                    )
+                if btn.count() == 0:
+                    continue
+                btn.first.scroll_into_view_if_needed()
                 time.sleep(0.3)
-                collapsed.first.click(force=True)
+                btn.first.click(force=True)
                 time.sleep(1)
             except Exception as e:
                 print(f"    [WARN] Could not click learning module toggle: {e}", flush=True)
@@ -548,8 +573,7 @@ class BlackboardScraper:
                     time.sleep(0.5)
                     page.locator("body").click(position={"x": 10, "y": 10}, force=True)
                     time.sleep(0.5)
-                    collapsed = page.locator(LM_TOGGLE_SELECTOR)
-                    collapsed.first.click(force=True)
+                    page.locator(LM_TOGGLE_SELECTOR).first.click(force=True)
                 except Exception:
                     break
 
@@ -586,23 +610,49 @@ class BlackboardScraper:
             '[aria-expanded="false"]'
         )
 
+        clicked_ids: set[str] = set()
         for attempt in range(30):
-            # Prefer the icon-based selector; fall back to analytics-id
-            collapsed = page.locator(FOLDER_ICON_TOGGLE)
-            count = collapsed.count()
-            if count == 0:
-                collapsed = page.locator(FOLDER_ANALYTICS_TOGGLE)
-                count = collapsed.count()
-            if count == 0:
+            first_id: str | None = page.evaluate(
+                """(clickedIds) => {
+                    // Prefer icon-based selector; fall back to analytics-id
+                    let buttons = Array.from(document.querySelectorAll(
+                        'div.content-list-item:has(svg[aria-label="Folder"]) button[aria-expanded="false"]'
+                    ));
+                    if (buttons.length === 0) {
+                        buttons = Array.from(document.querySelectorAll(
+                            'button[data-analytics-id="course.folder.base.item.toggleLm.button"][aria-expanded="false"]'
+                        ));
+                    }
+                    for (let i = 0; i < buttons.length; i++) {
+                        const item = buttons[i].closest('div.content-list-item');
+                        const id = item ? (item.getAttribute('data-content-id') || '__pos_' + i) : '__pos_' + i;
+                        if (!clickedIds.includes(id)) return id;
+                    }
+                    return null;
+                }""",
+                list(clicked_ids),
+            )
+            if first_id is None:
                 break
 
-            print(f"    [DEBUG] Expanding {count} collapsed Folder(s), attempt {attempt + 1}...", flush=True)
+            clicked_ids.add(first_id)
+            print(f"    [DEBUG] Expanding Folder {first_id!r}, attempt {attempt + 1}...", flush=True)
             try:
                 page.keyboard.press("Escape")
                 time.sleep(0.3)
-                collapsed.first.scroll_into_view_if_needed()
+                if first_id.startswith("__pos_"):
+                    btn = page.locator(FOLDER_ICON_TOGGLE)
+                    if btn.count() == 0:
+                        btn = page.locator(FOLDER_ANALYTICS_TOGGLE)
+                else:
+                    btn = page.locator(
+                        f'div.content-list-item[data-content-id="{first_id}"] button[aria-expanded="false"]'
+                    )
+                if btn.count() == 0:
+                    continue
+                btn.first.scroll_into_view_if_needed()
                 time.sleep(0.3)
-                collapsed.first.click(force=True)
+                btn.first.click(force=True)
                 time.sleep(1)
             except Exception as e:
                 print(f"    [WARN] Could not click folder toggle: {e}", flush=True)
@@ -611,10 +661,10 @@ class BlackboardScraper:
                     time.sleep(0.5)
                     page.locator("body").click(position={"x": 10, "y": 10}, force=True)
                     time.sleep(0.5)
-                    collapsed = page.locator(FOLDER_ICON_TOGGLE)
-                    if collapsed.count() == 0:
-                        collapsed = page.locator(FOLDER_ANALYTICS_TOGGLE)
-                    collapsed.first.click(force=True)
+                    fallback = page.locator(FOLDER_ICON_TOGGLE)
+                    if fallback.count() == 0:
+                        fallback = page.locator(FOLDER_ANALYTICS_TOGGLE)
+                    fallback.first.click(force=True)
                 except Exception:
                     break
 
@@ -964,19 +1014,23 @@ class BlackboardScraper:
                                 or bool(content_id and content_id in container_ids))
                 if is_container:
                     current_container = title
-                    continue
-
-                # Determine container_name for this item
-                if parent_container:
-                    # JS ancestor-walk succeeded — use it directly
-                    container_name = parent_container
+                    if not description:
+                        continue
+                    # Container has description text — emit it as a content object
+                    # using its own parent as the container_name.
+                    container_name = parent_container or None
                 else:
-                    # JS walk found nothing; use sequential tracking
-                    container_name = current_container
-                    # Reset tracker when this item is clearly at the top level
-                    # so it doesn't bleed into subsequent unrelated items
-                    if not is_nested:
-                        current_container = None
+                    # Determine container_name for this item
+                    if parent_container:
+                        # JS ancestor-walk succeeded — use it directly
+                        container_name = parent_container
+                    else:
+                        # JS walk found nothing; use sequential tracking
+                        container_name = current_container
+                        # Reset tracker when this item is clearly at the top level
+                        # so it doesn't bleed into subsequent unrelated items
+                        if not is_nested:
+                            current_container = None
 
                 if idx < 10:
                     print(
