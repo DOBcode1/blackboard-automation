@@ -285,7 +285,10 @@ class BlackboardScraper:
         try:
             page.wait_for_url("**/ultra/**", timeout=LOGIN_TIMEOUT_SECONDS * 1000)
             print("[OK] Login detected.")
-            page.wait_for_load_state("networkidle")
+            try:
+                page.wait_for_load_state("networkidle")
+            except PlaywrightTimeoutError:
+                print("[INFO] networkidle timed out after login — proceeding anyway.")
         except PlaywrightTimeoutError:
             raise TimeoutError(
                 f"Login not detected within {LOGIN_TIMEOUT_SECONDS}s. "
