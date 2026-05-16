@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import re
+import time
 from pathlib import Path
 
 import anthropic
@@ -52,7 +53,23 @@ _ASSESSMENT_TYPES = {
     "survey", "turnitin", "scorm",
 }
 
-_KEY_TITLE_KEYWORDS = {"syllabus", "schedule", "timeline"}
+_KEY_TITLE_KEYWORDS = {
+    "syllabus", "schedule", "timeline", "course outline", "course info",
+    "course description", "course overview", "grading", "requirements", "policies",
+}
+
+_KEY_TEXT_PHRASES = {
+    "grade", "grading", "assessment", "final exam", "midterm",
+    "percentage", "weight", "due date", "submission",
+}
+
+_LONG_DOC_TYPES = {"text document", "pdf"}
+_LONG_DOC_THRESHOLD = 3000  # chars
+
+print(
+    "Note: delete output/preprocessed_*.json to force re-preprocessing "
+    "if you change key item detection."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +143,15 @@ def _is_key_item(item: dict) -> bool:
     """Return True if this item should be included in pre-processing context."""
     title = (item.get("title") or "").lower()
     ctype = (item.get("content_type") or "").lower()
+    raw_text = (item.get("extracted_text") or "").lower()
 
     if any(kw in title for kw in _KEY_TITLE_KEYWORDS):
         return True
     if any(kw in ctype for kw in _ASSESSMENT_TYPES):
+        return True
+    if ctype in _LONG_DOC_TYPES and len(raw_text) > _LONG_DOC_THRESHOLD:
+        return True
+    if any(phrase in raw_text for phrase in _KEY_TEXT_PHRASES):
         return True
     return False
 
@@ -180,15 +202,36 @@ def preprocess_courses(client: anthropic.Anthropic, data: dict,
             f"[Full Course Content Index]\n{index_str}"
         )
 
-        response = client.messages.create(
-            model=MODEL,
-            max_tokens=4096,
-            system=PREPROCESS_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-        )
-        summary = response.content[0].text
+        fallback = "(pre-processing failed for this course — using compact index only)"
+        try:
+            response = client.messages.create(
+                model=MODEL,
+                max_tokens=4096,
+                system=PREPROCESS_SYSTEM_PROMPT,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            summary = response.content[0].text
+        except anthropic.RateLimitError:
+            print("  Rate limited — waiting 60 seconds...", flush=True)
+            time.sleep(60)
+            try:
+                response = client.messages.create(
+                    model=MODEL,
+                    max_tokens=4096,
+                    system=PREPROCESS_SYSTEM_PROMPT,
+                    messages=[{"role": "user", "content": user_message}],
+                )
+                summary = response.content[0].text
+            except anthropic.RateLimitError:
+                print(f"  Warning: rate limit retry failed for {cname}. Using fallback.", flush=True)
+                summary = fallback
+        except anthropic.APIError as e:
+            print(f"  Warning: API error for {cname}: {e}. Using fallback.", flush=True)
+            summary = fallback
+
         course_summaries[cid] = summary
         print(f"  Done. ({len(summary)} chars)", flush=True)
+        time.sleep(15)
 
     # Save cache
     cache_path.parent.mkdir(parents=True, exist_ok=True)
