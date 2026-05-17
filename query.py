@@ -276,11 +276,22 @@ def build_course_map(data: dict) -> dict[str, str]:
     return {c["course_id"]: c["course_name"] for c in data.get("courses", [])}
 
 
+_CROSS_COURSE_PHRASES = [
+    "all my classes", "all my courses", "all classes", "all courses",
+    "across all", "every class", "every course", "each class", "each course",
+    "my classes", "my courses",
+]
+
+
 def detect_courses(question: str, course_map: dict[str, str]) -> list[str]:
     """
     Return list of course_ids that match the question, or all ids if none match
     (i.e. treat as cross-course).
     """
+    q_low = question.lower()
+    if any(phrase in q_low for phrase in _CROSS_COURSE_PHRASES):
+        return list(course_map.keys())
+
     q_words = set(_words(question))
     matched = []
 
