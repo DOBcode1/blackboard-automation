@@ -1,0 +1,672 @@
+"""
+FastAPI web server for the Blackboard AI query engine.
+
+Usage:
+    python app.py output/content_text_20260514_084311.json
+"""
+
+import json
+import os
+import sys
+
+import anthropic
+import uvicorn
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, StreamingResponse
+from pydantic import BaseModel
+
+from query import (
+    MODEL,
+    SYSTEM_PROMPT,
+    build_context,
+    build_course_indexes,
+    build_course_map,
+    detect_courses,
+    load_data,
+    load_or_preprocess,
+    short_label,
+)
+
+# ---------------------------------------------------------------------------
+# Global state (populated at startup)
+# ---------------------------------------------------------------------------
+
+_data: dict = {}
+_compact_index: dict[str, str] = {}
+_full_texts: dict[str, dict[str, str]] = {}
+_course_map: dict[str, str] = {}
+_course_summaries: dict[str, str] = {}
+_client: anthropic.Anthropic | None = None
+_json_path: str = ""
+
+# ---------------------------------------------------------------------------
+# FastAPI app
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="Blackboard Assistant")
+
+
+# ---------------------------------------------------------------------------
+# HTML page (single-file, embedded)
+# ---------------------------------------------------------------------------
+
+HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Blackboard Assistant</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --navy: #1B3A5C;
+    --navy-dark: #122845;
+    --accent: #4A9EDB;
+    --bg: #F4F6F9;
+    --chat-bg: #FFFFFF;
+    --user-bubble: #E8EDF3;
+    --assistant-bubble: #FFFFFF;
+    --border: #DDE3EC;
+    --text: #1A1A2E;
+    --text-muted: #6B7A8D;
+    --sidebar-w: 240px;
+  }
+
+  html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+  /* ── Layout ── */
+  body { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--text); }
+
+  header {
+    background: var(--navy);
+    color: #fff;
+    padding: 0 20px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.25);
+    z-index: 10;
+  }
+  header h1 { font-size: 18px; font-weight: 600; letter-spacing: 0.3px; }
+  header .header-right { display: flex; gap: 10px; align-items: center; }
+
+  .btn-clear {
+    background: rgba(255,255,255,0.15);
+    border: 1px solid rgba(255,255,255,0.3);
+    color: #fff;
+    padding: 6px 14px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    transition: background 0.15s;
+  }
+  .btn-clear:hover { background: rgba(255,255,255,0.25); }
+
+  .main-layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ── */
+  aside {
+    width: var(--sidebar-w);
+    background: var(--navy-dark);
+    color: #cbd5e1;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: 16px 0;
+  }
+  aside h2 {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #8aa3bf;
+    padding: 0 16px 10px;
+  }
+  .course-item {
+    padding: 8px 16px;
+    font-size: 13px;
+    line-height: 1.4;
+    color: #94a8bf;
+    cursor: default;
+    border-left: 3px solid transparent;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .course-item.active {
+    border-left-color: var(--accent);
+    color: #e2ecf8;
+  }
+
+  /* ── Chat area ── */
+  .chat-wrapper {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--chat-bg);
+  }
+
+  .context-bar {
+    padding: 8px 20px;
+    font-size: 12px;
+    color: var(--text-muted);
+    background: #EEF2F7;
+    border-bottom: 1px solid var(--border);
+    min-height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .context-bar span { font-weight: 600; color: var(--navy); }
+
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    scroll-behavior: smooth;
+  }
+
+  .message { display: flex; gap: 10px; max-width: 780px; }
+  .message.user { align-self: flex-end; flex-direction: row-reverse; }
+  .message.assistant { align-self: flex-start; }
+
+  .avatar {
+    width: 32px; height: 32px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700;
+    flex-shrink: 0;
+  }
+  .message.user .avatar { background: var(--navy); color: #fff; }
+  .message.assistant .avatar { background: var(--accent); color: #fff; }
+
+  .bubble {
+    padding: 12px 16px;
+    border-radius: 12px;
+    font-size: 14.5px;
+    line-height: 1.65;
+    word-break: break-word;
+    max-width: 100%;
+  }
+  .message.user .bubble {
+    background: var(--user-bubble);
+    border-radius: 12px 4px 12px 12px;
+  }
+  .message.assistant .bubble {
+    background: var(--assistant-bubble);
+    border-left: 3px solid var(--accent);
+    border-radius: 4px 12px 12px 12px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+
+  /* Markdown rendering inside bubbles */
+  .bubble h1, .bubble h2, .bubble h3 { margin: 12px 0 6px; font-size: 1em; font-weight: 700; }
+  .bubble p { margin: 6px 0; }
+  .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
+  .bubble li { margin: 3px 0; }
+  .bubble code { background: #f0f4f8; padding: 1px 5px; border-radius: 4px; font-family: monospace; font-size: 13px; }
+  .bubble pre { background: #f0f4f8; padding: 10px; border-radius: 6px; overflow-x: auto; margin: 8px 0; }
+  .bubble pre code { background: none; padding: 0; }
+  .bubble strong { font-weight: 700; }
+  .bubble em { font-style: italic; }
+  .bubble table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }
+  .bubble th, .bubble td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .bubble th { background: #f0f4f8; font-weight: 600; }
+  .bubble a { color: var(--accent); }
+  .bubble hr { border: none; border-top: 1px solid var(--border); margin: 10px 0; }
+
+  /* Typing indicator */
+  .typing-indicator { display: flex; gap: 4px; align-items: center; padding: 8px 0; }
+  .typing-indicator .dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+    animation: bounce 1.2s infinite;
+  }
+  .typing-indicator .dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-indicator .dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes bounce { 0%,80%,100% { transform: scale(0.6); opacity: 0.5; } 40% { transform: scale(1); opacity: 1; } }
+
+  /* ── Input bar ── */
+  .input-bar {
+    padding: 14px 20px;
+    background: var(--chat-bg);
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  #user-input {
+    flex: 1;
+    resize: none;
+    border: 1.5px solid var(--border);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 14.5px;
+    font-family: inherit;
+    line-height: 1.5;
+    max-height: 160px;
+    outline: none;
+    transition: border-color 0.15s;
+    color: var(--text);
+  }
+  #user-input:focus { border-color: var(--accent); }
+  #user-input::placeholder { color: var(--text-muted); }
+
+  #send-btn {
+    background: var(--navy);
+    color: #fff;
+    border: none;
+    border-radius: 10px;
+    padding: 10px 18px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+    white-space: nowrap;
+    align-self: flex-end;
+  }
+  #send-btn:hover { background: var(--accent); }
+  #send-btn:disabled { background: #8aa3bf; cursor: not-allowed; }
+
+  /* ── Responsive ── */
+  @media (max-width: 640px) {
+    aside { display: none; }
+    #messages { padding: 14px 12px; }
+    .input-bar { padding: 10px 12px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#127979; Blackboard Assistant</h1>
+  <div class="header-right">
+    <button class="btn-clear" onclick="clearChat()">Clear Chat</button>
+  </div>
+</header>
+
+<div class="main-layout">
+  <aside>
+    <h2>Courses</h2>
+    <div id="course-list"></div>
+  </aside>
+
+  <div class="chat-wrapper">
+    <div class="context-bar" id="context-bar">Ask a question to get started.</div>
+    <div id="messages"></div>
+    <div class="input-bar">
+      <textarea id="user-input" rows="1" placeholder="Ask about your courses… (Enter to send, Shift+Enter for newline)"></textarea>
+      <button id="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────────────
+let history = [];
+let courses = [];
+let activeCourseIds = new Set();
+let isStreaming = false;
+
+// ── Initialise ─────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    const resp = await fetch('/api/courses');
+    const data = await resp.json();
+    courses = data.courses;
+    renderCourseList(courses);
+  } catch (e) {
+    console.error('Failed to load courses', e);
+  }
+})();
+
+function renderCourseList(courses) {
+  const el = document.getElementById('course-list');
+  el.innerHTML = '';
+  courses.forEach(c => {
+    const div = document.createElement('div');
+    div.className = 'course-item';
+    div.id = 'course-' + c.id;
+    div.textContent = c.label;
+    el.appendChild(div);
+  });
+}
+
+function setActiveCourses(ids) {
+  activeCourseIds = new Set(ids);
+  document.querySelectorAll('.course-item').forEach(el => {
+    el.classList.remove('active');
+  });
+  ids.forEach(id => {
+    const el = document.getElementById('course-' + id);
+    if (el) el.classList.add('active');
+  });
+}
+
+// ── Simple markdown renderer ───────────────────────────────────────────────
+function renderMarkdown(text) {
+  let html = text
+    // Escape HTML entities first
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+    // Fenced code blocks
+    .replace(/```[\w]*\n([\s\S]*?)```/g, (_, code) =>
+      `<pre><code>${code.trim()}</code></pre>`)
+
+    // Inline code
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+
+    // Headers
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+
+    // Bold + italic
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+
+    // HR
+    .replace(/^---+$/gm, '<hr>')
+
+    // Tables (basic)
+    .replace(/^\|(.+)\|$/gm, row => {
+      const cells = row.split('|').slice(1, -1).map(c => c.trim());
+      return '<tr>' + cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
+    })
+    .replace(/(<tr>.*<\/tr>)/gs, match => {
+      // Promote first row to thead
+      const rows = match.match(/<tr>.*?<\/tr>/gs) || [];
+      if (rows.length === 0) return match;
+      const headerRow = rows[0].replace(/<td>/g, '<th>').replace(/<\/td>/g, '</th>');
+      const bodyRows = rows.slice(1);
+      // Skip separator rows (contain only dashes)
+      const filteredBody = bodyRows.filter(r => !r.match(/<td>[\s\-|:]+<\/td>/));
+      return `<table><thead>${headerRow}</thead><tbody>${filteredBody.join('')}</tbody></table>`;
+    })
+
+    // Unordered lists
+    .replace(/((?:^[ \t]*[-*] .+\n?)+)/gm, match => {
+      const items = match.trim().split('\n')
+        .map(l => l.replace(/^[ \t]*[-*] /, '').trim())
+        .filter(Boolean)
+        .map(l => `<li>${l}</li>`)
+        .join('');
+      return `<ul>${items}</ul>`;
+    })
+
+    // Ordered lists
+    .replace(/((?:^[ \t]*\d+\. .+\n?)+)/gm, match => {
+      const items = match.trim().split('\n')
+        .map(l => l.replace(/^[ \t]*\d+\. /, '').trim())
+        .filter(Boolean)
+        .map(l => `<li>${l}</li>`)
+        .join('');
+      return `<ol>${items}</ol>`;
+    })
+
+    // Paragraphs (lines separated by blank lines)
+    .replace(/\n\n+/g, '</p><p>')
+    .replace(/\n/g, '<br>');
+
+  return `<p>${html}</p>`;
+}
+
+// ── Chat ───────────────────────────────────────────────────────────────────
+function addMessage(role, htmlContent, isTyping = false) {
+  const msgs = document.getElementById('messages');
+  const wrapper = document.createElement('div');
+  wrapper.className = `message ${role}`;
+
+  const avatar = document.createElement('div');
+  avatar.className = 'avatar';
+  avatar.textContent = role === 'user' ? 'U' : 'AI';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+
+  if (isTyping) {
+    bubble.innerHTML = `<div class="typing-indicator">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    </div>`;
+  } else {
+    bubble.innerHTML = htmlContent;
+  }
+
+  wrapper.appendChild(avatar);
+  wrapper.appendChild(bubble);
+  msgs.appendChild(wrapper);
+  msgs.scrollTop = msgs.scrollHeight;
+  return bubble;
+}
+
+function clearChat() {
+  history = [];
+  document.getElementById('messages').innerHTML = '';
+  document.getElementById('context-bar').textContent = 'Ask a question to get started.';
+  setActiveCourses([]);
+}
+
+async function sendMessage() {
+  if (isStreaming) return;
+
+  const input = document.getElementById('user-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  input.rows = 1;
+
+  // Show user message
+  addMessage('user', renderMarkdown(text));
+
+  // Typing indicator
+  const aiBubble = addMessage('assistant', '', true);
+
+  isStreaming = true;
+  document.getElementById('send-btn').disabled = true;
+
+  let fullText = '';
+  let firstChunk = true;
+
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, history: history }),
+    });
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // keep incomplete line
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (!raw) continue;
+
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.context_label) {
+          document.getElementById('context-bar').innerHTML =
+            'Context: <span>' + evt.context_label + '</span>';
+          const ids = evt.course_ids || [];
+          setActiveCourses(ids);
+        }
+
+        if (evt.text !== undefined) {
+          if (firstChunk) {
+            aiBubble.innerHTML = '';
+            firstChunk = false;
+          }
+          fullText += evt.text;
+          aiBubble.innerHTML = renderMarkdown(fullText);
+          document.getElementById('messages').scrollTop =
+            document.getElementById('messages').scrollHeight;
+        }
+
+        if (evt.done) {
+          history.push({ role: 'user', content: text });
+          history.push({ role: 'assistant', content: fullText });
+        }
+      }
+    }
+  } catch (err) {
+    aiBubble.innerHTML = `<em style="color:#c0392b">Error: ${err.message}</em>`;
+  } finally {
+    isStreaming = false;
+    document.getElementById('send-btn').disabled = false;
+  }
+}
+
+// ── Auto-resize textarea & Enter key ──────────────────────────────────────
+const inputEl = document.getElementById('user-input');
+inputEl.addEventListener('input', () => {
+  inputEl.style.height = 'auto';
+  inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+});
+inputEl.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+});
+</script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return HTML
+
+
+@app.get("/api/courses")
+async def get_courses():
+    return {
+        "courses": [
+            {"id": cid, "name": cname, "label": short_label(cname)}
+            for cid, cname in _course_map.items()
+        ]
+    }
+
+
+class ChatRequest(BaseModel):
+    message: str
+    history: list[dict] = []
+
+
+@app.post("/api/chat")
+async def chat(req: ChatRequest):
+    question = req.message
+    api_history = req.history  # [{role, content}, ...]
+
+    matched_ids = detect_courses(question, _course_map, _full_texts)
+
+    if len(matched_ids) == len(_course_map):
+        context_label = "all courses"
+    else:
+        context_label = " + ".join(
+            short_label(_course_map[cid]) for cid in matched_ids
+        )
+
+    context = build_context(
+        matched_ids, _course_map, _compact_index,
+        _course_summaries, _full_texts, question,
+    )
+
+    user_content = f"[Course Content]\n{context}\n\n[Question]\n{question}"
+
+    messages = list(api_history) + [{"role": "user", "content": user_content}]
+
+    def event_stream():
+        # First SSE event: context metadata
+        meta = json.dumps({"context_label": context_label, "course_ids": matched_ids})
+        yield f"data: {meta}\n\n"
+
+        with _client.messages.stream(
+            model=MODEL,
+            max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            messages=messages,
+        ) as stream:
+            for text in stream.text_stream:
+                payload = json.dumps({"text": text})
+                yield f"data: {payload}\n\n"
+
+        yield 'data: {"done": true}\n\n'
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Startup
+# ---------------------------------------------------------------------------
+
+def startup(json_path: str) -> None:
+    global _data, _compact_index, _full_texts, _course_map, _course_summaries
+    global _client, _json_path
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("Error: ANTHROPIC_API_KEY environment variable is not set.")
+        sys.exit(1)
+
+    if not os.path.exists(json_path):
+        print(f"Error: file not found: {json_path}")
+        sys.exit(1)
+
+    _json_path = json_path
+    print(f"Loading {json_path}…")
+    _data = load_data(json_path)
+    _compact_index, _full_texts = build_course_indexes(_data)
+    _course_map = build_course_map(_data)
+
+    if not _course_map:
+        print("No courses found in file.")
+        sys.exit(1)
+
+    _client = anthropic.Anthropic(api_key=api_key)
+
+    print(f"Loaded {len(_course_map)} course(s).")
+    _course_summaries = load_or_preprocess(
+        _client, _data, _full_texts, _compact_index, json_path
+    )
+    print("Ready.\n")
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python app.py <content_text_file.json>")
+        sys.exit(1)
+
+    startup(sys.argv[1])
+    uvicorn.run(app, host="127.0.0.1", port=8000)

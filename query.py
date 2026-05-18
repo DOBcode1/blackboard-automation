@@ -23,6 +23,7 @@ SYSTEM_PROMPT = (
     "material map and topic overlap to make specific recommendations. When asked to "
     "summarize a document, use the full document text provided. If information isn't "
     "available in the provided content, say so."
+    "\n\nAfter answering a question, suggest 2-3 brief follow-up actions the student might want to take. For example: going deeper into specific materials, creating a day-by-day study plan, summarizing a specific document, comparing assignments across courses, or identifying which topics to prioritize. Keep suggestions concise and as a short bulleted list at the end of your response."
 )
 
 PREPROCESS_SYSTEM_PROMPT = (
@@ -283,7 +284,8 @@ _CROSS_COURSE_PHRASES = [
 ]
 
 
-def detect_courses(question: str, course_map: dict[str, str]) -> list[str]:
+def detect_courses(question: str, course_map: dict[str, str],
+                   full_texts: dict[str, dict[str, str]] = None) -> list[str]:
     """
     Return list of course_ids that match the question, or all ids if none match
     (i.e. treat as cross-course).
@@ -301,6 +303,13 @@ def detect_courses(question: str, course_map: dict[str, str]) -> list[str]:
         abbrev_words = {w[0] for w in cname.split() if w and w[0].isupper()}
         if q_words & name_words or q_words & abbrev_words:
             matched.append(cid)
+
+    if full_texts:
+        for cid in course_map:
+            if cid not in matched:
+                titles = list(full_texts.get(cid, {}).keys())
+                if fuzzy_match_titles(question, titles):
+                    matched.append(cid)
 
     return matched if matched else list(course_map.keys())
 
@@ -490,7 +499,7 @@ def main() -> None:
             continue
 
         # Detect which course(s) apply
-        matched_ids = detect_courses(raw, course_map)
+        matched_ids = detect_courses(raw, course_map, full_texts)
 
         if len(matched_ids) == len(course_map):
             label = "all courses"
