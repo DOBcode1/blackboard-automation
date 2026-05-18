@@ -23,6 +23,7 @@ SYSTEM_PROMPT = (
     "material map and topic overlap to make specific recommendations. When asked to "
     "summarize a document, use the full document text provided. If information isn't "
     "available in the provided content, say so."
+    "\n\nAt the end of your response, include a 'Sources Used' section that lists the specific Blackboard items you referenced to answer the question. For each source, include:\n- The item title\n- The course name\n- The container/folder it's in (if any)\n- The content type (PDF, Text Document, Assignment, etc.)\nFormat as a compact list. Only include items you actually used in your answer, not every item in the context."
     "\n\nAfter answering a question, suggest 2-3 brief follow-up actions the student might want to take. For example: going deeper into specific materials, creating a day-by-day study plan, summarizing a specific document, comparing assignments across courses, or identifying which topics to prioritize. Keep suggestions concise and as a short bulleted list at the end of your response."
 )
 
