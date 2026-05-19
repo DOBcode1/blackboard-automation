@@ -422,7 +422,7 @@ def ask(client: anthropic.Anthropic, history: list[dict],
 
     with client.messages.stream(
         model=MODEL,
-        max_tokens=2048,
+        max_tokens=4096,
         system=SYSTEM_PROMPT,
         messages=history,
     ) as stream:
