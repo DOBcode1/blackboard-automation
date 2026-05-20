@@ -136,15 +136,29 @@ Require another Blackboard account to test — NOT available right now.
 
 **Core idea:** the query engine's pre-processing layer already extracts assignments and due dates into cached JSON. That cache IS the deadline database — the calendar and notification features surface what's already extracted, not re-derive it.
 
+**Onboarding — capturing course context:**
+
+For the calendar and deadline resolver to work, each course needs three pieces of context: a semester anchor (start/end dates), a class meeting schedule (days, times, location), and optionally a final exam schedule. Users can provide this via three input methods, picking whichever requires the least effort:
+
+- **Screenshot upload (preferred):** user drags in a screenshot of their registrar's class schedule grid (Fordham's "View Registration Information" page, or equivalent at other schools like Banner, PeopleSoft, Workday Student). Vision-capable AI parses the grid into structured course meeting times. Same flow works for finals schedule PDFs from the registrar.
+- **Natural language:** user types something like "Investments and Security Analysis Tuesdays and Thursdays from 11:30 to 12:45, Marketing Research Tuesdays and Fridays at noon..." and the AI extracts the same structured data.
+- **Manual form:** standard form fields per course (days of week checkboxes, start/end time, location) as a fallback for users who want explicit control or when the other methods produce errors.
+
+All three methods feed into the same JSON structure and are followed by a mandatory user confirmation step: AI shows what it parsed, user edits or approves before anything is saved. This prevents silent extraction errors from corrupting the calendar.
+
+The screenshot method is the demo-friendly path — drag-drop-done is the magic moment for marketing.
+
 **Calendar features:**
 - In-app calendar view at `/calendar`, color-coded by course
 - AI-driven additions via chat:
   - "Add my Social Psych midterm to my calendar" → AI confirms extracted date/time, adds event
   - "What do I have due in the next two weeks?" → AI answers from cache, then offers: *"Want me to add these to your calendar?"*
+  - Each calendar entry includes a source link back to the original Blackboard item, so clicking a deadline opens the assignment page in a new tab. Critical for users to verify or get details.
   - "Add all my Brit Gov assignments to my calendar" → bulk-add with confirmation summary
 - Manual editing of calendar entries (professors change dates, AI misreads occasionally) — original AI-extracted value preserved as fallback
 - Confidence threshold: low-confidence dates ("end of week 4", "before spring break") flagged for user confirmation before adding silently
 - Recurring events for weekly assignments, labs, discussion posts
+- Confidence-aware UI: deadlines with confidence 4-5 display normally; confidence 1-3 entries show a "review" badge and don't trigger notifications until user confirms.
 
 **Google Calendar sync (Phase 6.5b):**
 - OAuth flow on first opt-in
@@ -162,10 +176,22 @@ Require another Blackboard account to test — NOT available right now.
 - Digest mode: "Your week ahead" email every Sunday with all upcoming deadlines
 - Smart notifications: AI infers urgency from item type (final exam = earlier and more reminders than weekly discussion post)
 
+**Final exam handling:**
+
+Final exams are a special case — they often happen outside normal class meeting times and at different locations than the regular course. The AI cannot reliably guess final exam schedules from syllabi alone.
+
+- Manual entry per final at onboarding (or whenever finals schedule is released, usually mid-semester): user enters date, time, and location. 5 finals × ~30 seconds = under 3 minutes per semester.
+- Finals schedule PDF upload (power-user option): user uploads their school's official finals schedule PDF, AI reads it via the existing document reader pipeline and matches finals to the user's courses by name fuzzy-match.
+- Any assignment the AI extracts with type "final exam" and no user-provided final exam data is automatically flagged confidence-1 and marked "needs your input" in the calendar.
+
 **Data model sketch:**
-- `deadlines` table: id, user_id, course_id, source_item_id, title, due_at, confidence_score, ai_extracted_raw, user_edited (bool), created_at, updated_at
+
+- `courses` table: id, user_id, course_id, course_name, semester_start, semester_end, term_name, created_at, updated_at
+- `class_meetings` table: id, course_id, day_of_week (mon-sun), start_time, end_time, location
+- `final_exams` table: id, course_id, date, start_time, end_time, location, user_provided (bool)
+- `deadlines` table: id, user_id, course_id, source_item_id, title, due_date_raw (verbatim from syllabus), due_date_resolved (ISO datetime, nullable), confidence_score (1-5), ai_extracted_raw, user_edited (bool), source_link (Blackboard URL), created_at, updated_at
 - `notifications` table: id, deadline_id, channel (email/sms/push), trigger_offset_minutes, sent_at (nullable), status
-- `user_notification_preferences`: defaults per item type, quiet hours, digest settings
+- `user_notification_preferences`: defaults per item type, quiet hours, digest settings, weekly digest opt-in
 
 ### Phase 7: Study tools
 - Study guides generated from course materials
@@ -194,6 +220,7 @@ Require another Blackboard account to test — NOT available right now.
 - Per-school config layer (different login flows, term naming, course structures)
 - Begin testing with one additional university
 - Internal tool for auto-discovering each school's academic calendar (term dates, midterm/final windows, breaks) from registrar pages — speeds up per-school onboarding from manual research to point-and-scrape.
+- Screenshot/schedule parser tested across multiple SIS platforms (Banner, PeopleSoft, Workday Student) to ensure the onboarding flow works regardless of which system the school uses.
 
 ### Phase 12: Privacy, legal, launch
 - Privacy policy, ToS
