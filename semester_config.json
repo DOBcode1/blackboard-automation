@@ -1,0 +1,17 @@
+{
+  "_comment": "Per-course semester anchor + (future) class schedule. Used by the extraction prompt to resolve relative dates like 'Week 7'. course_id keys must match the IDs in content_text_*.json.",
+  "default": {
+    "semester_start": "2026-01-14",
+    "semester_end":   "2026-05-09",
+    "term_name":      "Spring 2026",
+    "class_schedule": []
+  },
+  "courses": {
+    "_example_course_id": {
+      "semester_start": "2026-01-14",
+      "semester_end":   "2026-05-09",
+      "term_name":      "Spring 2026 — Fordham",
+      "class_schedule": []
+    }
+  }
+}

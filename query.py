@@ -28,25 +28,70 @@ SYSTEM_PROMPT = (
     "\n\nAfter answering a question, suggest 2-3 brief follow-up actions the student might want to take. For example: going deeper into specific materials, creating a day-by-day study plan, summarizing a specific document, comparing assignments across courses, or identifying which topics to prioritize. Keep suggestions concise and as a short bulleted list at the end of your response."
 )
 
-PREPROCESS_SYSTEM_PROMPT = (
-    "You are analyzing a university course's Blackboard content. Extract a structured "
-    "summary containing:\n\n"
-    "1. ASSIGNMENTS: Every graded item (essays, papers, presentations, projects, "
-    "homework, quizzes, exams, midterms, finals, discussions, participation). For each include:\n"
-    "   - Name\n"
-    "   - Type (essay/exam/quiz/presentation/homework/discussion/other)\n"
-    "   - Due date (exact date, week number, or 'not specified')\n"
-    "   - Weight/percentage if mentioned\n"
-    "   - Description/requirements if available\n"
-    "   - Which topics or weeks it covers\n\n"
-    "2. COURSE SCHEDULE: Week-by-week or class-by-class topic breakdown if available\n\n"
-    "3. MATERIAL MAP: For each assignment, list which course materials (readings, "
-    "PowerPoints, documents) are relevant based on topic overlap, week numbers, or "
-    "explicit references\n\n"
-    "Be thorough. Look inside syllabus text, assessment descriptions, and document "
-    "content for assignment information that may be embedded in tables or prose. "
-    "Do not miss any graded item."
-)
+def load_semester_config() -> dict:
+    """Load semester_config.json from project root. Returns empty dict on missing file."""
+    config_path = Path("semester_config.json")
+    if not config_path.exists():
+        print(
+            "Warning: semester_config.json not found — calendar resolution will be degraded."
+        )
+        return {}
+    with open(config_path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def get_semester_anchor(config: dict, course_id: str) -> dict:
+    """Return the semester anchor for a course, falling back to default."""
+    courses = config.get("courses", {})
+    if course_id in courses:
+        return courses[course_id]
+    return config.get("default", {})
+
+
+def build_preprocess_prompt(semester_start: str, semester_end: str, term_name: str) -> str:
+    anchor_section = (
+        f"\n\nSEMESTER ANCHOR (use for date resolution):\n"
+        f"  term_name:      {term_name}\n"
+        f"  semester_start: {semester_start}\n"
+        f"  semester_end:   {semester_end}\n"
+    ) if semester_start else ""
+
+    return (
+        "You are analyzing a university course's Blackboard content. Extract a structured "
+        "summary containing:\n\n"
+        "1. ASSIGNMENTS: Every graded item (essays, papers, presentations, projects, "
+        "homework, quizzes, exams, midterms, finals, discussions, participation). "
+        "For each, output a section with this EXACT format:\n\n"
+        "### Assignment\n"
+        "- **Name:** <name>\n"
+        "- **Type:** essay/exam/quiz/presentation/homework/discussion/other\n"
+        "- **Due Date:** <verbatim text from syllabus, e.g. 'Week 7', 'October 15', 'TBD'>\n"
+        "- **Due Date Resolved:** <ISO date YYYY-MM-DD or datetime YYYY-MM-DDTHH:MM, or UNRESOLVED>\n"
+        "- **Weight:** <percentage or 'not specified'>\n"
+        "- **Confidence:** <integer 1–5>\n\n"
+        "Due Date Resolved rules:\n"
+        "  - Week N = semester_start + (N-1) weeks. If no day specified, use the Friday of that week.\n"
+        "  - Explicit date in text → parse and reformat to ISO.\n"
+        "  - Time specified (e.g. '10:00 PM') → include as YYYY-MM-DDTHH:MM.\n"
+        "  - Unresolvable ('ongoing', 'TBD', 'see instructor') → output exactly: UNRESOLVED\n"
+        "  - Two conflicting dates → use most authoritative source "
+        "(assignment page > syllabus table > syllabus body) and note conflict in parenthetical.\n\n"
+        "Confidence scale:\n"
+        "  5 = explicitly stated date on Blackboard assignment page\n"
+        "  4 = explicit date in syllabus or course schedule\n"
+        "  3 = inferred from 'Week N' with semester anchor\n"
+        "  2 = inferred from context with some ambiguity\n"
+        "  1 = best guess; user should verify\n"
+        "  Output as integer only, e.g. '**Confidence:** 4'\n\n"
+        "2. COURSE SCHEDULE: Week-by-week or class-by-class topic breakdown if available\n\n"
+        "3. MATERIAL MAP: For each assignment, list which course materials (readings, "
+        "PowerPoints, documents) are relevant based on topic overlap, week numbers, or "
+        "explicit references\n\n"
+        "Be thorough. Look inside syllabus text, assessment descriptions, and document "
+        "content for assignment information that may be embedded in tables or prose. "
+        "Do not miss any graded item."
+        + anchor_section
+    )
 
 MODEL = "claude-sonnet-4-6"
 FULL_TEXT_TRIGGER_CHARS = 500  # chars before extracted_text is truncated in compact index
@@ -161,7 +206,8 @@ def _is_key_item(item: dict) -> bool:
 
 def preprocess_courses(client: anthropic.Anthropic, data: dict,
                        full_texts: dict, compact_index: dict,
-                       cache_path: Path) -> dict[str, str]:
+                       cache_path: Path,
+                       semester_config: dict) -> dict[str, str]:
     """
     For each course, send key item texts + compact index to Claude and store
     a structured summary. Caches results to cache_path.
@@ -175,6 +221,13 @@ def preprocess_courses(client: anthropic.Anthropic, data: dict,
         items = course.get("content_objects", [])
 
         print(f"Pre-processing {cname}...", flush=True)
+
+        anchor = get_semester_anchor(semester_config, cid)
+        prompt = build_preprocess_prompt(
+            anchor.get("semester_start", ""),
+            anchor.get("semester_end", ""),
+            anchor.get("term_name", ""),
+        )
 
         # Gather full text for key items
         key_blocks = []
@@ -210,7 +263,7 @@ def preprocess_courses(client: anthropic.Anthropic, data: dict,
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=4096,
-                system=PREPROCESS_SYSTEM_PROMPT,
+                system=prompt,
                 messages=[{"role": "user", "content": user_message}],
             )
             summary = response.content[0].text
@@ -221,7 +274,7 @@ def preprocess_courses(client: anthropic.Anthropic, data: dict,
                 response = client.messages.create(
                     model=MODEL,
                     max_tokens=4096,
-                    system=PREPROCESS_SYSTEM_PROMPT,
+                    system=prompt,
                     messages=[{"role": "user", "content": user_message}],
                 )
                 summary = response.content[0].text
@@ -247,7 +300,8 @@ def preprocess_courses(client: anthropic.Anthropic, data: dict,
 
 def load_or_preprocess(client: anthropic.Anthropic, data: dict,
                        full_texts: dict, compact_index: dict,
-                       json_path: str) -> dict[str, str]:
+                       json_path: str,
+                       semester_config: dict) -> dict[str, str]:
     """Load pre-processed summaries from cache if fresh, otherwise re-run."""
     stem = Path(json_path).stem
     cache_path = Path("output") / f"preprocessed_{stem}.json"
@@ -263,7 +317,8 @@ def load_or_preprocess(client: anthropic.Anthropic, data: dict,
             return summaries
 
     print("Running pre-processing (this may take a moment)…\n")
-    return preprocess_courses(client, data, full_texts, compact_index, cache_path)
+    return preprocess_courses(client, data, full_texts, compact_index, cache_path,
+                              semester_config)
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +513,7 @@ def main() -> None:
 
     print(f"Loading {json_path}…")
     data = load_data(json_path)
+    semester_config = load_semester_config()
     compact_index, full_texts = build_course_indexes(data)
     course_map = build_course_map(data)
 
@@ -469,7 +525,7 @@ def main() -> None:
 
     # Pre-processing pass (cached)
     course_summaries = load_or_preprocess(
-        client, data, full_texts, compact_index, json_path
+        client, data, full_texts, compact_index, json_path, semester_config
     )
 
     history: list[dict] = []

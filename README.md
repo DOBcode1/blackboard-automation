@@ -193,6 +193,7 @@ Require another Blackboard account to test — NOT available right now.
 - Generalize scraper across Blackboard Ultra deployments at different universities
 - Per-school config layer (different login flows, term naming, course structures)
 - Begin testing with one additional university
+- Internal tool for auto-discovering each school's academic calendar (term dates, midterm/final windows, breaks) from registrar pages — speeds up per-school onboarding from manual research to point-and-scrape.
 
 ### Phase 12: Privacy, legal, launch
 - Privacy policy, ToS
