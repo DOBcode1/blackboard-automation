@@ -136,6 +136,69 @@ Require another Blackboard account to test — NOT available right now.
 
 **Core idea:** the query engine's pre-processing layer already extracts assignments and due dates into cached JSON. That cache IS the deadline database — the calendar and notification features surface what's already extracted, not re-derive it.
 
+**Onboarding — capturing the semester anchor:**
+
+Every calendar feature depends on knowing when the semester starts and ends.
+Week N → date calculations in the extraction pipeline, semester-window sanity
+checks in the aggregator, and the calendar's display range all read from this
+anchor. For the single-developer phase, the anchor lives in semester_config.json
+and is edited manually. For the production product (Phase 10), this becomes
+the very first onboarding step after Blackboard login.
+
+Three options for capturing it, listed in order of user effort:
+
+- **Auto-detect from Blackboard course names (Phase 11):** Course titles
+  almost always contain the term ("Spring 2026 Ethics in Business..."). A
+  per-university registrar lookup maps the term name to standard start/end
+  dates. Zero user effort but requires per-school maintenance and breaks on
+  inconsistent course naming. Best as a *suggestion layer* that pre-fills
+  the form below, not a silent default.
+
+- **Manual form (Phase 10 launch default):** Two date pickers — "When did
+  your semester start?" / "When does it end?" — plus a term name field that
+  pre-fills from the most common term in the user's Blackboard courses.
+  Takes 10 seconds, bulletproof, works on day one with no per-school setup.
+
+- **Syllabus upload (power-user option):** User drags in one syllabus PDF.
+  AI extracts semester start/end (and ideally class schedule) in one shot.
+  More complex, depends on syllabus quality, but extremely demo-friendly
+  if it works. Probably Phase 10.5 once the simpler flow is proven.
+
+Recommended launch path: ship the manual form for Phase 10. Layer in auto-detect
+as a pre-fill once enough Fordham users have entered data to validate the
+registrar mapping. Add syllabus upload later as an alternative entry point.
+
+Anchor confirmation step: regardless of which method is used, show the user
+the parsed dates before saving. Same UX pattern as the class schedule confirmation
+already documented below.
+
+**Known design wrinkles (worth solving in Phase 10, not Phase 6.5):**
+
+- **Per-course semester windows:** semester_config.json already has structure
+  for per-course overrides because not every course follows the main university
+  calendar. Study-abroad programs, 8-week accelerated courses, year-long thesis
+  seminars, and graduate independent studies frequently run off-cycle. The
+  International Internship course in current test data is exactly this case.
+  Calendar v1 ignores per-course overrides and uses one global window; Phase 10
+  needs per-course capture in onboarding (or a "this course runs on a different
+  schedule" toggle).
+
+- **Concurrent terms:** A user with a fall thesis course plus a summer intensive
+  has two active terms simultaneously. The data model needs to support this —
+  courses.term_name already exists, so the right query becomes "deadlines for
+  any active term as of today" rather than "deadlines for the current term."
+
+- **Holidays and breaks:** Spring break, Thanksgiving, fall reading week all
+  break the "Week N = start_date + 7*(N-1) days" assumption. Most syllabi count
+  Week 10 in academic weeks (skipping break) not calendar weeks. Calendar v1
+  accepts this drift as a confidence-3 problem; production should ingest the
+  academic calendar (which Phase 11 already plans to scrape from registrar pages)
+  and use it to skip break weeks in date resolution.
+
+- **Re-enrollment:** When the user returns for a new term, onboarding needs to
+  re-trigger for the new semester anchor. Not a calendar v1 problem but the
+  data model should make "active term" a queryable concept from day one.
+
 **Onboarding — capturing course context:**
 
 For the calendar and deadline resolver to work, each course needs three pieces of context: a semester anchor (start/end dates), a class meeting schedule (days, times, location), and optionally a final exam schedule. Users can provide this via three input methods, picking whichever requires the least effort:
@@ -185,6 +248,8 @@ Final exams are a special case — they often happen outside normal class meetin
 - Any assignment the AI extracts with type "final exam" and no user-provided final exam data is automatically flagged confidence-1 and marked "needs your input" in the calendar.
 
 **Data model sketch:**
+
+Anchor data captured during onboarding (see above); per-course overrides support off-cycle courses like study-abroad and accelerated terms.
 
 - `courses` table: id, user_id, course_id, course_name, semester_start, semester_end, term_name, created_at, updated_at
 - `class_meetings` table: id, course_id, day_of_week (mon-sun), start_time, end_time, location
