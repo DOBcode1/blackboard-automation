@@ -101,6 +101,20 @@ def classify_date(raw: str) -> str:
     return "vague"
 
 
+def classify_resolved_date(raw_resolved: str) -> str:
+    """Classify the AI-resolved ISO date field."""
+    if not raw_resolved or raw_resolved.strip() == "":
+        return "other"
+    s = raw_resolved.strip()
+    if s.upper() == "UNRESOLVED":
+        return "unresolved"
+    if _ISO_TIME_RE.search(s):
+        return "iso_datetime"
+    if _ISO_DATE_RE.search(s):
+        return "iso_date"
+    return "other"
+
+
 def has_time(raw: str, date_cat: str) -> bool:
     """Return True if the entry has a time component or explicit all-day info."""
     if date_cat == "iso_datetime":
@@ -196,7 +210,8 @@ def parse_assignments_from_summary(course_id: str, course_name: str, summary_tex
         ).strip()
 
         name       = _extract_field(block, "Name") or heading_title
-        due_raw    = _extract_field(block, "Due Date", "Due date", "Due", "Deadline", "Date Due")
+        due_raw      = _extract_field(block, "Due Date", "Due date", "Due", "Deadline", "Date Due")
+        due_resolved = _extract_field(block, "Due Date Resolved", "Resolved Due Date")
         weight     = _extract_field(block, "Weight", "Points", "Point Value",
                                     "% of Grade", "Percentage", "Value", "Grade Weight")
         atype      = _extract_field(block, "Type", "Assignment Type", "Format", "Category")
@@ -209,7 +224,8 @@ def parse_assignments_from_summary(course_id: str, course_name: str, summary_tex
             "title":           name,
             "course_id":       course_id,
             "course_name":     course_name,
-            "due_date_raw":    due_raw,
+            "due_date_raw":      due_raw,
+            "due_date_resolved": due_resolved,
             "assignment_type": atype,
             "point_value":     weight,
             "source_link":     urls[0] if urls else "",
@@ -281,7 +297,11 @@ def run_audit(cache_path: Path) -> None:
 
     # Classify dates and stash on each entry
     for a in all_assignments:
-        cat = classify_date(a["due_date_raw"])
+        res_cat = classify_resolved_date(a.get("due_date_resolved", ""))
+        if res_cat in ("iso_datetime", "iso_date"):
+            cat = res_cat
+        else:
+            cat = classify_date(a["due_date_raw"])
         a["_date_cat"] = cat
         a["_has_time"] = has_time(a["due_date_raw"], cat)
 
@@ -331,6 +351,7 @@ def run_audit(cache_path: Path) -> None:
         "missing":      "Missing       (no date field at all)",
     }
 
+    lines.append("  Note: classification prefers 'Due Date Resolved' (ISO field) over 'Due Date' (raw text).")
     lines.append("")
     for cat in ("iso_datetime", "iso_date", "date_string", "relative", "vague", "missing"):
         n = date_counts.get(cat, 0)
@@ -379,12 +400,24 @@ def run_audit(cache_path: Path) -> None:
     _h1(lines, "4. DUPLICATE DETECTION")
     lines.append(f"\n  Checking same-course pairs with title similarity ≥ {DUPLICATE_THRESHOLD}%\n")
 
+    def _normalize_for_dedup(title: str) -> str:
+        t = title.lower()
+        t = re.sub(r'\b(chapter|ch|week|assignment|essay|part|lab|quiz|module|unit|hw|homework)\s*#?\s*\d+\b', '', t)
+        t = re.sub(r'#\s*\d+', '', t)
+        t = re.sub(r'\b\d+\b', '', t)
+        t = re.sub(r'\s+', ' ', t).strip()
+        return t
+
     duplicate_pairs: list[tuple[int, int, float]] = []
     for i in range(len(all_assignments)):
         for j in range(i + 1, len(all_assignments)):
             a, b = all_assignments[i], all_assignments[j]
             if a["course_id"] != b["course_id"]:
                 continue
+            norm_a = _normalize_for_dedup(a["title"])
+            norm_b = _normalize_for_dedup(b["title"])
+            if norm_a == norm_b and a["title"] != b["title"]:
+                continue  # numbered series, not duplicates
             sim = _similarity(a["title"], b["title"])
             if sim >= DUPLICATE_THRESHOLD:
                 duplicate_pairs.append((i, j, sim))
@@ -438,6 +471,7 @@ def run_audit(cache_path: Path) -> None:
         lines.append(f"\n  [{idx:02d}] {a['title']}")
         lines.append(f"        Course   : {_short_name(a['course_name'])}")
         lines.append(f"        Due      : {a['due_date_raw'] or '(missing)'}")
+        lines.append(f"        Resolved : {a.get('due_date_resolved') or '(missing)'}")
         lines.append(f"        Date cat : {a.get('_date_cat', '?')}")
         lines.append(f"        Type     : {a['assignment_type'] or '(missing)'}")
         lines.append(f"        Weight   : {a['point_value'] or '(missing)'}")
