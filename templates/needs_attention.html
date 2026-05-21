@@ -103,6 +103,9 @@
     border-radius: 8px;
     padding: 16px;
   }
+  .card.dismissed-card {
+    background: #f9fafb;
+  }
 
   .card-course {
     display: flex;
@@ -142,6 +145,157 @@
     font-weight: 600;
     margin-right: 4px;
   }
+
+  .card-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 12px;
+    flex-wrap: wrap;
+  }
+
+  /* Buttons */
+  .btn-primary {
+    background: #1b3a5c;
+    color: #fff;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-primary.btn-sm { font-size: 13px; padding: 5px 12px; }
+  .btn-primary:hover { background: #16304e; }
+  .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+  .btn-text {
+    background: none;
+    border: none;
+    color: #6b7a8d;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 6px 4px;
+    border-radius: 4px;
+    font-family: inherit;
+  }
+  .btn-text.btn-sm { font-size: 13px; }
+  .btn-text:hover { text-decoration: underline; color: #374151; }
+
+  /* Dismissed toggle */
+  .dismissed-toggle-wrap {
+    text-align: center;
+    margin-top: 16px;
+    margin-bottom: 8px;
+  }
+
+  /* Form modal */
+  #na-modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+  }
+  #na-modal-backdrop.open { display: flex; }
+  #na-modal-card {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    padding: 24px;
+    max-width: 460px;
+    width: calc(100% - 48px);
+    position: relative;
+  }
+  #na-modal-close {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    background: none;
+    border: none;
+    font-size: 20px;
+    line-height: 1;
+    color: #6b7a8d;
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 4px;
+  }
+  #na-modal-close:hover { background: #f0f4f8; color: #1a1a2e; }
+  #na-modal-title {
+    font-size: 17px;
+    font-weight: 700;
+    color: #1a1a2e;
+    margin-bottom: 16px;
+    padding-right: 28px;
+    line-height: 1.35;
+  }
+  .na-form-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #374151;
+    margin-bottom: 12px;
+  }
+  .na-form-row.notes-row { align-items: flex-start; }
+  .na-form-row.notes-row .na-form-label { padding-top: 5px; }
+  .na-form-label {
+    font-size: 12px;
+    color: #6b7a8d;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    min-width: 60px;
+    flex-shrink: 0;
+  }
+  .na-input {
+    padding: 6px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: inherit;
+    flex: 1;
+    min-width: 0;
+  }
+  textarea.na-input {
+    resize: vertical;
+    flex: unset;
+    width: 100%;
+    line-height: 1.5;
+  }
+  .na-time-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: #6b7a8d;
+    cursor: pointer;
+    user-select: none;
+  }
+  .na-time-toggle input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: #1b3a5c;
+  }
+  .na-date-wrap {
+    padding-left: 68px;
+    margin-bottom: 12px;
+  }
+  .na-date-wrap .na-input {
+    width: 100%;
+    flex: unset;
+  }
+  .na-form-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .na-form-error {
+    color: #dc2626;
+    font-size: 13px;
+    margin-top: 8px;
+  }
 </style>
 </head>
 <body>
@@ -170,8 +324,7 @@
 
   <p class="intro">
     These items couldn't be added to your calendar automatically. Review them
-    below and add to your calendar manually if needed. Editing isn't supported
-    yet — this page is read-only for now.
+    below and add each one to your calendar if needed.
   </p>
 
   {% set outside = items | selectattr("flag_reason", "equalto", "outside_semester_window") | list %}
@@ -220,6 +373,278 @@
 
   {% endif %}
 
+  {# ── Dismissed section ── #}
+  {% if dismissed_items %}
+  <div class="dismissed-toggle-wrap">
+    <button class="btn-text" id="dismissed-toggle-btn"
+            data-show-text="Show {{ dismissed_items | length }} dismissed item{{ 's' if dismissed_items | length != 1 else '' }}"
+            onclick="toggleDismissed()">
+      Show {{ dismissed_items | length }} dismissed item{{ 's' if dismissed_items | length != 1 else '' }}
+    </button>
+  </div>
+  <div id="dismissed-section" style="display:none;">
+    <div class="section">
+      <div class="section-header">
+        <div class="section-title" style="color:#9ca3af;">Dismissed ({{ dismissed_items | length }})</div>
+        <div class="section-subtitle">Items you've dismissed. Click Restore to put them back.</div>
+      </div>
+      <div class="cards">
+        {% for item in dismissed_items %}
+        <div class="card dismissed-card">
+          <div class="card-course">
+            <span class="course-dot" style="background: {{ item.course_color }};"></span>
+            <span class="course-name">{{ item.course_name }}</span>
+          </div>
+          <div class="card-title">{{ item.title }}</div>
+          {% if item.due_date_resolved %}
+          <div class="card-meta"><span class="label">Due</span>{{ item.due_date_resolved }}</div>
+          {% endif %}
+          {% if item.notes %}
+          <div class="card-meta"><span class="label">Notes</span>{{ item.notes }}</div>
+          {% endif %}
+          <div class="card-actions">
+            <button class="btn-primary btn-sm restore-btn" data-id="{{ item.id }}">Restore</button>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
 </div>
+
+
+<!-- Add-to-calendar form modal -->
+<div id="na-modal-backdrop">
+  <div id="na-modal-card">
+    <button id="na-modal-close" aria-label="Close">&times;</button>
+    <div id="na-modal-title">Add to calendar</div>
+
+    <div class="na-form-row">
+      <span class="na-form-label">Title</span>
+      <input type="text" id="na-input-title" class="na-input" />
+    </div>
+
+    <div class="na-form-row">
+      <span class="na-form-label">Due</span>
+      <label class="na-time-toggle">
+        <input type="checkbox" id="na-input-has-time" /> Has specific time?
+      </label>
+    </div>
+    <div class="na-date-wrap">
+      <input type="datetime-local" id="na-input-datetime" class="na-input" style="display:none;" />
+      <input type="date" id="na-input-date" class="na-input" />
+    </div>
+
+    <div class="na-form-row">
+      <span class="na-form-label">Type</span>
+      <input type="text" id="na-input-type" class="na-input" placeholder="e.g. essay, exam, homework" />
+    </div>
+
+    <div class="na-form-row notes-row">
+      <span class="na-form-label">Notes</span>
+      <textarea id="na-input-notes" class="na-input" rows="3" placeholder="Optional notes"></textarea>
+    </div>
+
+    <div id="na-form-error" class="na-form-error" style="display:none;"></div>
+
+    <div class="na-form-actions">
+      <button id="na-form-submit" class="btn-primary">Add to calendar</button>
+      <button class="btn-text" onclick="closeAddModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+
+<script>
+  /* ── Form modal state ── */
+  var _formItem = null;
+
+  function openAddModal(id, title, due, type, flag) {
+    _formItem = {id: id};
+
+    document.getElementById('na-input-title').value = title || '';
+
+    var hasTime = due && due.indexOf('T') !== -1;
+    var hasTimeCb = document.getElementById('na-input-has-time');
+    var dtInput   = document.getElementById('na-input-datetime');
+    var dInput    = document.getElementById('na-input-date');
+    hasTimeCb.checked = !!hasTime;
+    if (hasTime) {
+      dtInput.value = due.substring(0, 16);
+      dtInput.style.display = '';
+      dInput.style.display  = 'none';
+      dInput.value = '';
+    } else {
+      dInput.value = due ? due.substring(0, 10) : '';
+      dInput.style.display  = '';
+      dtInput.style.display = 'none';
+      dtInput.value = '';
+    }
+
+    document.getElementById('na-input-type').value  = type  || '';
+    document.getElementById('na-input-notes').value = '';
+    document.getElementById('na-form-error').style.display = 'none';
+
+    var submitBtn = document.getElementById('na-form-submit');
+    submitBtn.textContent = flag === 'outside_semester_window' ? 'Confirm date' : 'Add to calendar';
+    submitBtn.disabled = false;
+
+    var backdrop = document.getElementById('na-modal-backdrop');
+    backdrop.classList.add('open');
+  }
+
+  function closeAddModal() {
+    document.getElementById('na-modal-backdrop').classList.remove('open');
+    _formItem = null;
+  }
+
+  /* ── Has-time toggle ── */
+  document.getElementById('na-input-has-time').addEventListener('change', function() {
+    var hasTime = this.checked;
+    var dtInput = document.getElementById('na-input-datetime');
+    var dInput  = document.getElementById('na-input-date');
+    if (hasTime) {
+      var dateVal = dInput.value;
+      dtInput.value = dateVal ? dateVal + 'T00:00' : '';
+      dtInput.style.display = '';
+      dInput.style.display  = 'none';
+      dInput.value = '';
+    } else {
+      var dtVal = dtInput.value;
+      dInput.value = dtVal ? dtVal.substring(0, 10) : '';
+      dInput.style.display  = '';
+      dtInput.style.display = 'none';
+      dtInput.value = '';
+    }
+  });
+
+  /* ── Submit add-to-calendar form ── */
+  document.getElementById('na-form-submit').addEventListener('click', function() {
+    if (!_formItem) return;
+
+    var edits = {};
+    var newTitle = document.getElementById('na-input-title').value.trim();
+    if (newTitle) edits.title = newTitle;
+
+    var hasTime = document.getElementById('na-input-has-time').checked;
+    var newDue;
+    if (hasTime) {
+      var v = document.getElementById('na-input-datetime').value;
+      newDue = v ? v + ':00' : '';
+    } else {
+      newDue = document.getElementById('na-input-date').value || '';
+    }
+
+    if (!newDue) {
+      var errEl = document.getElementById('na-form-error');
+      errEl.textContent = 'Please enter a due date.';
+      errEl.style.display = '';
+      return;
+    }
+    edits.due_date_resolved = newDue;
+
+    var newType = document.getElementById('na-input-type').value.trim();
+    if (newType) edits.type = newType;
+
+    var newNotes = document.getElementById('na-input-notes').value.trim();
+    if (newNotes) edits.notes = newNotes;
+
+    var submitBtn = document.getElementById('na-form-submit');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Saving\u2026';
+
+    fetch('/api/overrides/' + _formItem.id, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({edits: edits})
+    })
+    .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+    .then(function(res) {
+      if (!res.ok) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Add to calendar';
+        var errEl = document.getElementById('na-form-error');
+        errEl.textContent = 'Save failed: ' + (res.data.error || 'unknown error');
+        errEl.style.display = '';
+        return;
+      }
+      window.location.href = '/calendar/needs-attention';
+    })
+    .catch(function() {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Add to calendar';
+      var errEl = document.getElementById('na-form-error');
+      errEl.textContent = 'Save failed: network error';
+      errEl.style.display = '';
+    });
+  });
+
+  /* ── Close modal on backdrop click or Escape ── */
+  document.getElementById('na-modal-backdrop').addEventListener('click', function(e) {
+    if (e.target === this) closeAddModal();
+  });
+  document.getElementById('na-modal-close').addEventListener('click', closeAddModal);
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') closeAddModal();
+  });
+
+  /* ── Wire add-to-cal and dismiss buttons (delegated after DOM ready) ── */
+  document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.add-to-cal-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        openAddModal(
+          this.dataset.id,
+          this.dataset.title,
+          this.dataset.due,
+          this.dataset.type,
+          this.dataset.flag
+        );
+      });
+    });
+
+    document.querySelectorAll('.dismiss-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var id = this.dataset.id;
+        if (!confirm('Dismiss this item from the calendar? You can recover it later from a dismissed view.')) return;
+        fetch('/api/overrides/' + id, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({dismissed: true})
+        })
+        .then(function(r) { return r.json(); })
+        .then(function() { window.location.reload(); })
+        .catch(function() { alert('Dismiss failed: network error'); });
+      });
+    });
+
+    document.querySelectorAll('.restore-btn').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        var id = this.dataset.id;
+        if (!confirm('Restore this item? Your dismissal will be cleared.')) return;
+        fetch('/api/overrides/' + id, {method: 'DELETE'})
+        .then(function(r) { return r.json(); })
+        .then(function() { window.location.reload(); })
+        .catch(function() { alert('Restore failed: network error'); });
+      });
+    });
+  });
+
+  /* ── Toggle dismissed section ── */
+  function toggleDismissed() {
+    var section = document.getElementById('dismissed-section');
+    var btn     = document.getElementById('dismissed-toggle-btn');
+    if (!section) return;
+    if (section.style.display === 'none') {
+      section.style.display = '';
+      btn.textContent = 'Hide dismissed items';
+    } else {
+      section.style.display = 'none';
+      btn.textContent = btn.dataset.showText || 'Show dismissed items';
+    }
+  }
+</script>
+
 </body>
 </html>

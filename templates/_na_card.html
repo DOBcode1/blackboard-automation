@@ -13,4 +13,16 @@
   {% if item.confidence_score is not none %}
   <div class="card-meta"><span class="label">Confidence</span>{{ item.confidence_score }}/5</div>
   {% endif %}
+  <div class="card-actions">
+    <button class="btn-primary btn-sm add-to-cal-btn"
+            data-id="{{ item.id }}"
+            data-title="{{ item.title | e }}"
+            data-due="{{ (item.due_date_resolved or '') | e }}"
+            data-type="{{ (item.type or '') | e }}"
+            data-flag="{{ (item.flag_reason or '') | e }}"
+    >{% if item.flag_reason == 'outside_semester_window' %}Confirm date{% else %}Add to calendar{% endif %}</button>
+    <button class="btn-text btn-sm dismiss-btn"
+            data-id="{{ item.id }}"
+    >Dismiss</button>
+  </div>
 </div>

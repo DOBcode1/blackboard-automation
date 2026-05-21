@@ -174,7 +174,8 @@
     border-radius: 4px;
   }
   #event-modal-close:hover { background: #f0f4f8; color: #1a1a2e; }
-  #event-modal-title {
+
+  #modal-title-view {
     font-size: 18px;
     font-weight: 700;
     color: #1a1a2e;
@@ -190,6 +191,8 @@
     color: #374151;
     margin-top: 10px;
   }
+  .modal-row.notes-row { align-items: flex-start; }
+  .modal-row.notes-row .modal-label { padding-top: 5px; }
   .modal-label {
     font-size: 12px;
     color: #6b7a8d;
@@ -197,6 +200,7 @@
     letter-spacing: 0.04em;
     font-weight: 600;
     min-width: 72px;
+    flex-shrink: 0;
   }
   .modal-course-dot {
     width: 11px;
@@ -226,6 +230,102 @@
     border: none;
     border-top: 1px solid #e5e7eb;
     margin: 14px 0 4px;
+  }
+
+  /* Edited indicators */
+  .modal-edited-badge {
+    display: inline-block;
+    background: #f0f4f8;
+    color: #6b7a8d;
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-left: 8px;
+    vertical-align: middle;
+    font-weight: 400;
+  }
+  .modal-edited-hint {
+    font-size: 12px;
+    color: #9ca3af;
+    font-style: italic;
+    margin-left: 2px;
+  }
+
+  /* Action buttons */
+  .modal-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+  }
+  .btn-primary {
+    background: #1b3a5c;
+    color: #fff;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 14px;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .btn-primary:hover { background: #16304e; }
+  .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+  .btn-text {
+    background: none;
+    border: none;
+    color: #6b7a8d;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 6px 4px;
+    border-radius: 4px;
+    font-family: inherit;
+  }
+  .btn-text:hover { text-decoration: underline; color: #374151; }
+
+  /* Edit-mode form inputs */
+  .modal-input {
+    padding: 6px;
+    border: 1px solid #d1d5db;
+    border-radius: 4px;
+    font-size: 14px;
+    font-family: inherit;
+    flex: 1;
+    min-width: 0;
+  }
+  textarea.modal-input {
+    resize: vertical;
+    flex: unset;
+    width: 100%;
+    line-height: 1.5;
+  }
+  .modal-time-toggle {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    color: #6b7a8d;
+    cursor: pointer;
+    user-select: none;
+  }
+  .modal-time-toggle input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: #1b3a5c;
+  }
+  .modal-date-input-wrap {
+    padding-left: 80px;
+    margin-top: 6px;
+  }
+  .modal-date-input-wrap .modal-input {
+    width: 100%;
+    flex: unset;
+  }
+
+  /* Error message */
+  .modal-error-msg {
+    color: #dc2626;
+    font-size: 13px;
+    margin-top: 8px;
   }
 
   /* Legend */
@@ -368,7 +468,7 @@
 
       toggleBtn.addEventListener('click', function () {
         var anyChecked = courses.some(function (c) { return _filterState[c.course_id]; });
-        var newVal = !anyChecked; // if any checked → hide all; if none → show all
+        var newVal = !anyChecked;
         courses.forEach(function (c) { _filterState[c.course_id] = newVal; });
         checksContainer.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
           cb.checked = newVal;
@@ -378,45 +478,91 @@
         updateToggleBtn();
       });
 
-      /* ── Modal helpers ── */
-      var backdrop = document.getElementById('event-modal-backdrop');
-      var card     = document.getElementById('event-modal-card');
-      var closeBtn = document.getElementById('event-modal-close');
+      /* ── Modal state ── */
+      var _modalData = null; // { id, title, allDay, start, color, ep }
 
-      function openModal(info) {
-        var ev   = info.event;
-        var ep   = ev.extendedProps || {};
-        var color = ev.backgroundColor || '#6b7a8d';
+      var backdrop  = document.getElementById('event-modal-backdrop');
+      var closeBtn  = document.getElementById('event-modal-close');
 
-        // Title
-        document.getElementById('event-modal-title').textContent = ev.title;
+      function buildModalData(ev) {
+        return {
+          id:     ev.id,
+          title:  ev.title,
+          allDay: ev.allDay,
+          start:  ev.start,
+          color:  ev.backgroundColor || '#6b7a8d',
+          ep:     ev.extendedProps || {}
+        };
+      }
+
+      /* ── Format a JS Date for the modal ── */
+      function formatDate(start, allDay) {
+        if (allDay) {
+          return new Intl.DateTimeFormat('en-US', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+          }).format(start);
+        }
+        var datePart = new Intl.DateTimeFormat('en-US', {
+          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+        }).format(start);
+        var timePart = new Intl.DateTimeFormat('en-US', {
+          hour: 'numeric', minute: '2-digit', hour12: true
+        }).format(start);
+        return datePart + ' at ' + timePart;
+      }
+
+      /* ── Render VIEW mode ── */
+      function renderViewMode() {
+        var m  = _modalData;
+        var ep = m.ep;
+        var color = m.color;
+
+        // Toggle visibility
+        document.getElementById('modal-title-view').style.display = '';
+        document.getElementById('modal-title-edit').style.display = 'none';
+        document.getElementById('modal-due-view').style.display = '';
+        document.getElementById('modal-due-edit').style.display = 'none';
+        document.getElementById('modal-type-view').style.display = '';
+        document.getElementById('modal-type-edit').style.display = 'none';
+        document.getElementById('modal-notes-edit').style.display = 'none';
+        document.getElementById('modal-confidence-row').style.display = '';
+        document.getElementById('modal-raw-row').style.display = '';
+        document.getElementById('modal-actions-view').style.display = '';
+        document.getElementById('modal-actions-edit').style.display = 'none';
+        document.getElementById('modal-error-msg').style.display = 'none';
+
+        // Title + edited badge
+        document.getElementById('modal-title-text').textContent = m.title;
+        document.getElementById('modal-edited-badge').style.display = ep.user_edited ? '' : 'none';
 
         // Course
         document.getElementById('modal-course-dot').style.background = color;
         document.getElementById('modal-course-name').textContent = ep.course_name || '';
 
         // Due date
-        var start = ev.start;
-        var dateStr;
-        if (ev.allDay) {
-          dateStr = new Intl.DateTimeFormat('en-US', {
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-          }).format(start);
-        } else {
-          var datePart = new Intl.DateTimeFormat('en-US', {
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-          }).format(start);
-          var timePart = new Intl.DateTimeFormat('en-US', {
-            hour: 'numeric', minute: '2-digit', hour12: true
-          }).format(start);
-          dateStr = datePart + ' at ' + timePart;
-        }
+        var dateStr = formatDate(m.start, m.allDay);
         document.getElementById('modal-due-date').textContent = dateStr;
+        var dueEdited = ep.user_edited_fields && ep.user_edited_fields.indexOf('due_date_resolved') !== -1;
+        document.getElementById('modal-due-edited-hint').style.display = dueEdited ? '' : 'none';
 
         // Type
         var rawType = ep.type || '';
         document.getElementById('modal-type').textContent =
           rawType ? rawType.charAt(0).toUpperCase() + rawType.slice(1) : '—';
+        var typeEdited = ep.user_edited_fields && ep.user_edited_fields.indexOf('type') !== -1;
+        document.getElementById('modal-type-edited-hint').style.display = typeEdited ? '' : 'none';
+
+        // Notes (view mode — only show if non-empty)
+        var notes = ep.notes || '';
+        var notesView = document.getElementById('modal-notes-view');
+        if (notes) {
+          document.getElementById('modal-notes-text').textContent = notes;
+          notesView.style.display = '';
+          var notesEdited = ep.user_edited_fields && ep.user_edited_fields.indexOf('notes') !== -1;
+          document.getElementById('modal-notes-edited-hint').style.display = notesEdited ? '' : 'none';
+        } else {
+          notesView.style.display = 'none';
+        }
 
         // Confidence dots
         var score = typeof ep.confidence_score === 'number' ? ep.confidence_score : 0;
@@ -434,9 +580,9 @@
         }
 
         // Raw date row
-        var rawRow = document.getElementById('modal-raw-row');
-        var rawText = ep.due_date_raw || '';
+        var rawRow  = document.getElementById('modal-raw-row');
         var rawHint = document.getElementById('modal-raw-hint');
+        var rawText = ep.due_date_raw || '';
         if (!rawText || rawText === dateStr) {
           rawRow.style.display = 'none';
           rawHint.style.display = 'none';
@@ -445,7 +591,110 @@
           rawHint.style.display = '';
           document.getElementById('modal-raw-text').textContent = rawText;
         }
+      }
 
+      /* ── Enter EDIT mode ── */
+      function enterEditMode() {
+        var m  = _modalData;
+        var ep = m.ep;
+
+        document.getElementById('modal-title-view').style.display = 'none';
+        document.getElementById('modal-title-edit').style.display = '';
+        document.getElementById('modal-due-view').style.display = 'none';
+        document.getElementById('modal-due-edit').style.display = '';
+        document.getElementById('modal-type-view').style.display = 'none';
+        document.getElementById('modal-type-edit').style.display = '';
+        document.getElementById('modal-notes-view').style.display = 'none';
+        document.getElementById('modal-notes-edit').style.display = '';
+        document.getElementById('modal-confidence-row').style.display = 'none';
+        document.getElementById('modal-raw-row').style.display = 'none';
+        document.getElementById('modal-raw-hint').style.display = 'none';
+        document.getElementById('modal-actions-view').style.display = 'none';
+        document.getElementById('modal-actions-edit').style.display = '';
+        document.getElementById('modal-error-msg').style.display = 'none';
+
+        // Show reset only if previously edited
+        document.getElementById('modal-btn-reset').style.display = ep.user_edited ? '' : 'none';
+
+        // Populate inputs
+        document.getElementById('modal-input-title').value = m.title;
+
+        var resolved = ep.due_date_resolved || '';
+        var hasTime  = resolved.indexOf('T') !== -1;
+        var hasTimeCb = document.getElementById('modal-input-has-time');
+        var dtInput   = document.getElementById('modal-input-datetime');
+        var dInput    = document.getElementById('modal-input-date');
+        hasTimeCb.checked = hasTime;
+        if (hasTime) {
+          dtInput.value = resolved.substring(0, 16);
+          dtInput.style.display = '';
+          dInput.style.display  = 'none';
+          dInput.value = '';
+        } else {
+          dInput.value = resolved.substring(0, 10);
+          dInput.style.display  = '';
+          dtInput.style.display = 'none';
+          dtInput.value = '';
+        }
+
+        document.getElementById('modal-input-type').value  = ep.type  || '';
+        document.getElementById('modal-input-notes').value = ep.notes || '';
+      }
+
+      /* ── Get edited due date string ── */
+      function getEditedDueDate() {
+        var hasTime = document.getElementById('modal-input-has-time').checked;
+        if (hasTime) {
+          var v = document.getElementById('modal-input-datetime').value;
+          return v ? v + ':00' : '';
+        }
+        return document.getElementById('modal-input-date').value || '';
+      }
+
+      /* ── Show inline error ── */
+      function showModalError(msg) {
+        var el = document.getElementById('modal-error-msg');
+        el.textContent = msg;
+        el.style.display = '';
+      }
+
+      /* ── Refetch events and close modal ── */
+      function refetchAndClose() {
+        return fetch('/api/deadlines')
+          .then(function(r) { return r.json(); })
+          .then(function(data) {
+            _allEvents = data;
+            applyFilter();
+            closeModal();
+          });
+      }
+
+      /* ── Open modal from raw API event (e.g. after reset) ── */
+      function openModalFromRaw(rawEvent) {
+        var start;
+        if (rawEvent.allDay) {
+          // Parse as local date to avoid UTC-offset day shift
+          var parts = rawEvent.start.split('-').map(Number);
+          start = new Date(parts[0], parts[1] - 1, parts[2]);
+        } else {
+          start = new Date(rawEvent.start);
+        }
+        _modalData = {
+          id:     rawEvent.id,
+          title:  rawEvent.title,
+          allDay: rawEvent.allDay,
+          start:  start,
+          color:  rawEvent.backgroundColor || '#6b7a8d',
+          ep:     rawEvent.extendedProps || {}
+        };
+        renderViewMode();
+        // backdrop already open
+      }
+
+      /* ── Open modal ── */
+      function openModal(info) {
+        _modalData = buildModalData(info.event);
+        renderViewMode();
         backdrop.classList.add('open');
         document.body.style.overflow = 'hidden';
       }
@@ -453,14 +702,141 @@
       function closeModal() {
         backdrop.classList.remove('open');
         document.body.style.overflow = '';
+        _modalData = null;
       }
 
+      /* ── Button wiring ── */
       closeBtn.addEventListener('click', closeModal);
-      backdrop.addEventListener('click', function (e) {
+      backdrop.addEventListener('click', function(e) {
         if (e.target === backdrop) closeModal();
       });
-      document.addEventListener('keydown', function (e) {
+      document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') closeModal();
+      });
+
+      document.getElementById('modal-btn-edit').addEventListener('click', enterEditMode);
+
+      document.getElementById('modal-btn-cancel').addEventListener('click', function() {
+        renderViewMode();
+      });
+
+      document.getElementById('modal-btn-dismiss').addEventListener('click', function() {
+        if (!_modalData) return;
+        if (!confirm('Dismiss this item from the calendar? You can recover it later from a dismissed view.')) return;
+        var id = _modalData.id;
+        fetch('/api/overrides/' + id, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({dismissed: true})
+        })
+        .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+        .then(function(res) {
+          if (!res.ok) {
+            showModalError('Dismiss failed: ' + (res.data.error || 'unknown error'));
+            return;
+          }
+          return refetchAndClose();
+        })
+        .catch(function() { showModalError('Dismiss failed: network error'); });
+      });
+
+      document.getElementById('modal-btn-save').addEventListener('click', function() {
+        if (!_modalData) return;
+        var m  = _modalData;
+        var ep = m.ep;
+        var edits = {};
+
+        var newTitle = document.getElementById('modal-input-title').value.trim();
+        if (newTitle && newTitle !== m.title) edits.title = newTitle;
+
+        var newDue  = getEditedDueDate();
+        var origDue = ep.due_date_resolved || '';
+        if (newDue !== origDue) edits.due_date_resolved = newDue;
+
+        var newType  = document.getElementById('modal-input-type').value.trim();
+        var origType = ep.type || '';
+        if (newType !== origType) edits.type = newType;
+
+        var newNotes  = document.getElementById('modal-input-notes').value.trim();
+        var origNotes = ep.notes || '';
+        if (newNotes !== origNotes) edits.notes = newNotes;
+
+        if (Object.keys(edits).length === 0) {
+          renderViewMode();
+          return;
+        }
+
+        var saveBtn = document.getElementById('modal-btn-save');
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving\u2026';
+
+        fetch('/api/overrides/' + m.id, {
+          method: 'PUT',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({edits: edits})
+        })
+        .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+        .then(function(res) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = 'Save';
+          if (!res.ok) {
+            showModalError('Save failed: ' + (res.data.error || 'unknown error'));
+            return;
+          }
+          return refetchAndClose();
+        })
+        .catch(function() {
+          saveBtn.disabled = false;
+          saveBtn.textContent = 'Save';
+          showModalError('Save failed: network error');
+        });
+      });
+
+      document.getElementById('modal-btn-reset').addEventListener('click', function() {
+        if (!_modalData) return;
+        if (!confirm('Reset all your edits to the original AI-extracted values?')) return;
+        var id = _modalData.id;
+        fetch('/api/overrides/' + id, {method: 'DELETE'})
+        .then(function(r) { return r.json().then(function(d) { return {ok: r.ok, data: d}; }); })
+        .then(function(res) {
+          if (!res.ok) {
+            showModalError('Reset failed: ' + (res.data.error || 'unknown error'));
+            return;
+          }
+          return fetch('/api/deadlines')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+              _allEvents = data;
+              applyFilter();
+              var updated = data.find(function(e) { return e.id === id; });
+              if (updated) {
+                openModalFromRaw(updated);
+              } else {
+                closeModal();
+              }
+            });
+        })
+        .catch(function() { showModalError('Reset failed: network error'); });
+      });
+
+      /* ── Has-time checkbox toggle ── */
+      document.getElementById('modal-input-has-time').addEventListener('change', function() {
+        var hasTime = this.checked;
+        var dtInput = document.getElementById('modal-input-datetime');
+        var dInput  = document.getElementById('modal-input-date');
+        if (hasTime) {
+          var dateVal = dInput.value;
+          dtInput.value = dateVal ? dateVal + 'T00:00' : '';
+          dtInput.style.display = '';
+          dInput.style.display  = 'none';
+          dInput.value = '';
+        } else {
+          var dtVal = dtInput.value;
+          dInput.value = dtVal ? dtVal.substring(0, 10) : '';
+          dInput.style.display  = '';
+          dtInput.style.display = 'none';
+          dtInput.value = '';
+        }
       });
 
       /* ── Calendar ── */
@@ -509,34 +885,97 @@
 <div id="event-modal-backdrop">
   <div id="event-modal-card">
     <button id="event-modal-close" aria-label="Close">&times;</button>
-    <div id="event-modal-title"></div>
 
+    <!-- Title: view mode -->
+    <div id="modal-title-view">
+      <span id="modal-title-text"></span><span id="modal-edited-badge" class="modal-edited-badge" style="display:none;">&#9998; Edited</span>
+    </div>
+    <!-- Title: edit mode -->
+    <div id="modal-title-edit" class="modal-row" style="display:none; margin-top:0;">
+      <span class="modal-label">Title</span>
+      <input type="text" id="modal-input-title" class="modal-input" />
+    </div>
+
+    <!-- Course (always visible, not editable) -->
     <div class="modal-row">
       <span class="modal-label">Course</span>
       <span class="modal-course-dot" id="modal-course-dot"></span>
       <span id="modal-course-name"></span>
     </div>
 
-    <div class="modal-row">
+    <!-- Due date: view mode -->
+    <div class="modal-row" id="modal-due-view">
       <span class="modal-label">Due</span>
       <span id="modal-due-date"></span>
+      <span id="modal-due-edited-hint" class="modal-edited-hint" style="display:none;">(edited)</span>
+    </div>
+    <!-- Due date: edit mode -->
+    <div id="modal-due-edit" style="display:none;">
+      <div class="modal-row">
+        <span class="modal-label">Due</span>
+        <label class="modal-time-toggle">
+          <input type="checkbox" id="modal-input-has-time" /> Has specific time?
+        </label>
+      </div>
+      <div class="modal-date-input-wrap">
+        <input type="datetime-local" id="modal-input-datetime" class="modal-input" style="display:none;" />
+        <input type="date" id="modal-input-date" class="modal-input" />
+      </div>
     </div>
 
-    <div class="modal-row">
+    <!-- Type: view mode -->
+    <div class="modal-row" id="modal-type-view">
       <span class="modal-label">Type</span>
       <span id="modal-type"></span>
+      <span id="modal-type-edited-hint" class="modal-edited-hint" style="display:none;">(edited)</span>
+    </div>
+    <!-- Type: edit mode -->
+    <div id="modal-type-edit" class="modal-row" style="display:none;">
+      <span class="modal-label">Type</span>
+      <input type="text" id="modal-input-type" class="modal-input" />
     </div>
 
-    <div class="modal-row">
+    <!-- Notes: view mode (only shown when notes exist) -->
+    <div class="modal-row" id="modal-notes-view" style="display:none;">
+      <span class="modal-label">Notes</span>
+      <span id="modal-notes-text"></span>
+      <span id="modal-notes-edited-hint" class="modal-edited-hint" style="display:none;">(edited)</span>
+    </div>
+    <!-- Notes: edit mode (always shown in edit mode) -->
+    <div id="modal-notes-edit" class="modal-row notes-row" style="display:none;">
+      <span class="modal-label">Notes</span>
+      <textarea id="modal-input-notes" class="modal-input" rows="3"></textarea>
+    </div>
+
+    <!-- Confidence (view mode only) -->
+    <div class="modal-row" id="modal-confidence-row">
       <span class="modal-label">Confidence</span>
       <div class="modal-confidence-dots" id="modal-confidence-dots"></div>
     </div>
 
+    <!-- Raw date (view mode only) -->
     <div class="modal-row" id="modal-raw-row">
       <span class="modal-label" style="color:#9ca3af;">As written</span>
       <span class="modal-raw" id="modal-raw-text"></span>
     </div>
     <div id="modal-raw-hint" style="display:none;font-size:11px;color:#9ca3af;font-style:italic;margin-top:4px;">Original text from the syllabus or Blackboard. The resolved date may not always match (e.g., Blackboard placeholders).</div>
+
+    <!-- Inline error -->
+    <div id="modal-error-msg" class="modal-error-msg" style="display:none;"></div>
+
+    <hr class="modal-divider" />
+
+    <!-- Action buttons: view mode -->
+    <div id="modal-actions-view" class="modal-actions">
+      <button id="modal-btn-edit" class="btn-primary">Edit</button>
+      <button id="modal-btn-dismiss" class="btn-text">Dismiss</button>
+    </div>
+    <!-- Action buttons: edit mode -->
+    <div id="modal-actions-edit" class="modal-actions" style="display:none;">
+      <button id="modal-btn-save" class="btn-primary">Save</button>
+      <button id="modal-btn-cancel" class="btn-text">Cancel</button>
+      <button id="modal-btn-reset" class="btn-text" style="display:none; color:#9ca3af;">Reset to original</button>
+    </div>
   </div>
 </div>
 

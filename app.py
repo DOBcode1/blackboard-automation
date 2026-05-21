@@ -185,6 +185,7 @@ async def needs_attention_page(request: Request):
                 "items": None,
                 "generated_at": None,
                 "total_count": 0,
+                "dismissed_items": [],
                 "active_page": "calendar",
             },
         )
@@ -194,6 +195,10 @@ async def needs_attention_page(request: Request):
         {**item, "course_color": color_map.get(item.get("course_id", ""), "#6b7a8d")}
         for item in data.get("needs_attention", [])
     ]
+    dismissed = [
+        {**item, "course_color": color_map.get(item.get("course_id", ""), "#6b7a8d")}
+        for item in data.get("dismissed", [])
+    ]
     return templates.TemplateResponse(
         request,
         "needs_attention.html",
@@ -201,6 +206,7 @@ async def needs_attention_page(request: Request):
             "items": items,
             "generated_at": data.get("generated_at", ""),
             "total_count": len(items),
+            "dismissed_items": dismissed,
             "active_page": "calendar",
         },
     )
@@ -233,7 +239,12 @@ async def api_deadlines():
                     "course_name": item.get("course_name", ""),
                     "type": item.get("type", ""),
                     "due_date_raw": item.get("due_date_raw", ""),
+                    "due_date_resolved": item.get("due_date_resolved", ""),
                     "confidence_score": item.get("confidence_score"),
+                    "notes": item.get("notes", ""),
+                    "user_edited": item.get("user_edited", False),
+                    "user_edited_fields": item.get("user_edited_fields", []),
+                    "manual_add": item.get("manual_add", False),
                 },
             }
         )
