@@ -11,8 +11,9 @@ import sys
 
 import anthropic
 import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from query import (
@@ -26,6 +27,63 @@ from query import (
     load_or_preprocess,
     short_label,
 )
+
+# ---------------------------------------------------------------------------
+# Calendar — color palette & template setup
+# ---------------------------------------------------------------------------
+
+# Fixed palette of 6 accessible colors, one per course.
+# Courses are sorted alphabetically by course_id and assigned by index:
+#   index 0 → _6205935_1 (Philosophical Ethics)       → blue
+#   index 1 → _6206084_1 (Operations & Supply Chain)  → green
+#   index 2 → _6207787_1 (International Internship)   → red
+#   index 3 → _6209533_1 (Fintech)                    → orange
+#   index 4 → _6210142_1 (Ethics in Business)         → purple
+#   index 5 → _6210387_1 (Legal Framework)            → cyan
+_COURSE_COLOR_PALETTE = [
+    "#2563eb",  # blue
+    "#16a34a",  # green
+    "#dc2626",  # red
+    "#ea580c",  # orange
+    "#9333ea",  # purple
+    "#0891b2",  # cyan
+]
+
+_DEADLINES_PATH = "output/deadlines.json"
+_SEMESTER_CONFIG_PATH = "semester_config.json"
+
+templates = Jinja2Templates(directory="templates")
+
+
+def _load_deadlines() -> dict | None:
+    """Return parsed deadlines.json, or None if missing."""
+    if not os.path.exists(_DEADLINES_PATH):
+        return None
+    with open(_DEADLINES_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_semester_config() -> dict:
+    """Return parsed semester_config.json, or {} if missing/malformed."""
+    if not os.path.exists(_SEMESTER_CONFIG_PATH):
+        print("Warning: semester_config.json not found — calendar resolution will be degraded.")
+        return {}
+    try:
+        with open(_SEMESTER_CONFIG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"Warning: could not load semester_config.json ({e}) — calendar resolution will be degraded.")
+        return {}
+
+
+def _build_course_colors(deadlines_data: dict) -> dict[str, str]:
+    """Return {course_id: color} by sorting course_ids alphabetically."""
+    course_ids = sorted(c["course_id"] for c in deadlines_data.get("courses", []))
+    return {
+        cid: _COURSE_COLOR_PALETTE[i % len(_COURSE_COLOR_PALETTE)]
+        for i, cid in enumerate(course_ids)
+    }
+
 
 # ---------------------------------------------------------------------------
 # Global state (populated at startup)
@@ -575,6 +633,74 @@ async def get_courses():
     }
 
 
+@app.get("/calendar")
+async def calendar_page(request: Request):
+    data = _load_deadlines()
+    if data is None:
+        return templates.TemplateResponse(
+            request,
+            "calendar.html",
+            {
+                "courses": [],
+                "needs_attention_count": 0,
+                "generated_at": None,
+            },
+        )
+
+    color_map = _build_course_colors(data)
+    courses = [
+        {
+            "course_id": c["course_id"],
+            "course_name": c["course_name"],
+            "color": color_map.get(c["course_id"], "#6b7a8d"),
+        }
+        for c in data.get("courses", [])
+    ]
+    return templates.TemplateResponse(
+        request,
+        "calendar.html",
+        {
+            "courses": courses,
+            "needs_attention_count": data.get("needs_attention_count", 0),
+            "generated_at": data.get("generated_at", ""),
+        },
+    )
+
+
+@app.get("/api/deadlines")
+async def api_deadlines():
+    data = _load_deadlines()
+    if data is None:
+        return JSONResponse([])
+
+    color_map = _build_course_colors(data)
+    events = []
+    for item in data.get("resolved", []):
+        start = item.get("due_date_resolved", "")
+        if not start:
+            continue
+        all_day = "T" not in start  # date-only strings have no 'T'
+        color = color_map.get(item.get("course_id", ""), "#6b7a8d")
+        events.append(
+            {
+                "id": item.get("id", ""),
+                "title": item.get("title", ""),
+                "start": start,
+                "allDay": all_day,
+                "backgroundColor": color,
+                "borderColor": color,
+                "extendedProps": {
+                    "course_id": item.get("course_id", ""),
+                    "course_name": item.get("course_name", ""),
+                    "type": item.get("type", ""),
+                    "due_date_raw": item.get("due_date_raw", ""),
+                    "confidence_score": item.get("confidence_score"),
+                },
+            }
+        )
+    return JSONResponse(events)
+
+
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = []
@@ -651,10 +777,11 @@ def startup(json_path: str) -> None:
         sys.exit(1)
 
     _client = anthropic.Anthropic(api_key=api_key)
+    _semester_config = _load_semester_config()
 
     print(f"Loaded {len(_course_map)} course(s).")
     _course_summaries = load_or_preprocess(
-        _client, _data, _full_texts, _compact_index, json_path
+        _client, _data, _full_texts, _compact_index, json_path, _semester_config
     )
     print("Ready.\n")
 

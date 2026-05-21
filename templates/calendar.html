@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Deadlines Calendar</title>
+<link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f4f6f9;
+    color: #1a1a2e;
+    min-height: 100vh;
+  }
+
+  header {
+    background: #1b3a5c;
+    color: #fff;
+    padding: 16px 32px;
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+  }
+  header h1 { font-size: 20px; font-weight: 600; }
+  header .updated {
+    font-size: 12px;
+    color: #8aa3bf;
+  }
+  header a.nav-link {
+    margin-left: auto;
+    font-size: 13px;
+    color: #4a9edb;
+    text-decoration: none;
+  }
+  header a.nav-link:hover { text-decoration: underline; }
+
+  .attention-banner {
+    background: #fef9c3;
+    border-bottom: 1px solid #fde047;
+    padding: 12px 32px;
+    font-size: 14px;
+    color: #713f12;
+  }
+  .attention-banner a {
+    color: #92400e;
+    font-weight: 600;
+    text-decoration: underline;
+  }
+
+  .container {
+    max-width: 1100px;
+    margin: 32px auto;
+    padding: 0 24px;
+  }
+
+  .no-data {
+    background: #fff;
+    border: 1px solid #dde3ec;
+    border-radius: 10px;
+    padding: 40px;
+    text-align: center;
+    color: #6b7a8d;
+    font-size: 15px;
+  }
+  .no-data code {
+    display: inline-block;
+    margin-top: 10px;
+    background: #f0f4f8;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 13px;
+    color: #1a1a2e;
+  }
+
+  #calendar-wrapper {
+    background: #fff;
+    border: 1px solid #dde3ec;
+    border-radius: 10px;
+    padding: 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+
+  /* Legend */
+  .legend {
+    margin-top: 24px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px 24px;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #374151;
+  }
+  .legend-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#128197; Deadlines Calendar</h1>
+  {% if generated_at %}
+  <span class="updated">Last updated: {{ generated_at }}</span>
+  {% endif %}
+  <a class="nav-link" href="/">&#8592; Chat</a>
+</header>
+
+{% if needs_attention_count > 0 %}
+<div class="attention-banner">
+  &#9888; <strong>{{ needs_attention_count }} item{{ 's' if needs_attention_count != 1 else '' }} need{{ '' if needs_attention_count != 1 else 's' }} your attention</strong>
+  &mdash; <a href="/calendar/needs-attention">review them</a>
+</div>
+{% endif %}
+
+<div class="container">
+
+  {% if not courses %}
+  <div class="no-data">
+    No deadlines aggregated yet.<br>
+    <code>python aggregate_deadlines.py</code>
+  </div>
+  {% else %}
+
+  <div id="calendar-wrapper">
+    <div id="calendar"></div>
+  </div>
+
+  <div class="legend">
+    {% for course in courses %}
+    <div class="legend-item">
+      <span class="legend-dot" style="background: {{ course.color }};"></span>
+      <span>{{ course.course_name }}</span>
+    </div>
+    {% endfor %}
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      var calendarEl = document.getElementById('calendar');
+      var calendar = new FullCalendar.Calendar(calendarEl, {
+        initialView: 'dayGridMonth',
+        height: 'auto',
+        headerToolbar: {
+          left: 'prev,next today',
+          center: 'title',
+          right: 'dayGridMonth,timeGridWeek,listWeek'
+        },
+        events: '/api/deadlines',
+        eventDisplay: 'block',
+      });
+      calendar.render();
+    });
+  </script>
+
+  {% endif %}
+
+</div>
+
+</body>
+</html>
