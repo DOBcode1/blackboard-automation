@@ -325,6 +325,20 @@ def aggregate(preprocessed_path: Path) -> dict:
     }
 
 
+# ── Write helper (used by API endpoints) ─────────────────────────────────────
+
+def write_aggregated(preprocessed_path: Path | None = None) -> dict:
+    """Run aggregate() and write to output/deadlines.json. Returns the result."""
+    if preprocessed_path is None:
+        preprocessed_path = _find_most_recent_preprocessed()
+    result = aggregate(preprocessed_path)
+    out_path = Path("output") / "deadlines.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2, ensure_ascii=False)
+    return result
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -347,12 +361,8 @@ def main() -> None:
         path = _find_most_recent_preprocessed()
         print(f"Auto-detected: {path}")
 
-    result = aggregate(path)
-
+    result = write_aggregated(path)
     out_path = Path("output") / "deadlines.json"
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
 
     print(f"Source: {result['source_file']}")
     print(f"Courses: {result['course_count']}")

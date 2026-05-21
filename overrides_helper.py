@@ -131,6 +131,14 @@ def set_dismissed(overrides: dict, deadline_id: str, dismissed: bool = True) -> 
     return overrides
 
 
+def set_manual_add(overrides: dict, deadline_id: str, manual_add: bool = True) -> dict:
+    """Set the manual_add flag for a deadline entry."""
+    overrides = _ensure_entry(overrides, deadline_id)
+    overrides["overrides"][deadline_id]["manual_add"] = manual_add
+    overrides["overrides"][deadline_id]["edited_at"] = _now_iso()
+    return overrides
+
+
 def clear_override(overrides: dict, deadline_id: str, field: str | None = None) -> dict:
     """Remove a field override, or the entire entry if field is None."""
     overrides = copy.deepcopy(overrides)
