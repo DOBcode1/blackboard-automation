@@ -68,6 +68,68 @@
     color: #1a1a2e;
   }
 
+  /* Filter bar */
+  .filter-bar {
+    background: #fff;
+    border: 1px solid #dde3ec;
+    border-radius: 10px;
+    padding: 12px 16px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .filter-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: #374151;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .filter-checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 16px;
+    flex: 1;
+  }
+  .filter-check-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 13px;
+    color: #374151;
+    cursor: pointer;
+    user-select: none;
+  }
+  .filter-check-item input[type="checkbox"] {
+    cursor: pointer;
+    accent-color: #1b3a5c;
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+  }
+  .filter-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .filter-toggle-all {
+    background: none;
+    border: none;
+    font-size: 13px;
+    color: #1b3a5c;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 4px;
+    text-decoration: underline;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+  .filter-toggle-all:hover { background: #f0f4f8; }
+
   #calendar-wrapper {
     background: #fff;
     border: 1px solid #dde3ec;
@@ -215,6 +277,14 @@
   </div>
   {% else %}
 
+  <script type="application/json" id="courses-data">{{ courses | tojson }}</script>
+
+  <div class="filter-bar" id="filter-bar">
+    <span class="filter-label">Show courses:</span>
+    <div class="filter-checks" id="filter-checks"></div>
+    <button class="filter-toggle-all" id="filter-toggle-all">Hide all</button>
+  </div>
+
   <div id="calendar-wrapper">
     <div id="calendar"></div>
   </div>
@@ -230,6 +300,83 @@
 
   <script>
     document.addEventListener('DOMContentLoaded', function () {
+
+      /* ── Course data & filter state ── */
+      var courses = JSON.parse(document.getElementById('courses-data').textContent);
+
+      function shortName(fullName) {
+        var m = fullName.match(/^Spring \d{4}\s+(.+?)\s+\([^)]+\)\s*$/);
+        return m ? m[1] : fullName;
+      }
+
+      var STORAGE_KEY = 'calendar_filter_state';
+      var _filterState = {};
+
+      // Load stored state, default missing courses to true
+      var stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        try { _filterState = JSON.parse(stored); } catch (e) {}
+      }
+      courses.forEach(function (c) {
+        if (!Object.prototype.hasOwnProperty.call(_filterState, c.course_id)) {
+          _filterState[c.course_id] = true;
+        }
+      });
+
+      function saveFilter() {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(_filterState));
+      }
+
+      /* ── Build filter checkboxes ── */
+      var checksContainer = document.getElementById('filter-checks');
+      courses.forEach(function (c) {
+        var label = document.createElement('label');
+        label.className = 'filter-check-item';
+
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.dataset.courseId = c.course_id;
+        cb.checked = !!_filterState[c.course_id];
+        cb.addEventListener('change', function () {
+          _filterState[c.course_id] = cb.checked;
+          saveFilter();
+          applyFilter();
+          updateToggleBtn();
+        });
+
+        var dot = document.createElement('span');
+        dot.className = 'filter-dot';
+        dot.style.background = c.color;
+
+        var text = document.createTextNode(shortName(c.course_name));
+
+        label.appendChild(cb);
+        label.appendChild(dot);
+        label.appendChild(text);
+        checksContainer.appendChild(label);
+      });
+
+      /* ── Toggle-all button ── */
+      var toggleBtn = document.getElementById('filter-toggle-all');
+
+      function updateToggleBtn() {
+        var anyChecked = courses.some(function (c) { return _filterState[c.course_id]; });
+        toggleBtn.textContent = anyChecked ? 'Hide all' : 'Show all';
+      }
+
+      updateToggleBtn();
+
+      toggleBtn.addEventListener('click', function () {
+        var anyChecked = courses.some(function (c) { return _filterState[c.course_id]; });
+        var newVal = !anyChecked; // if any checked → hide all; if none → show all
+        courses.forEach(function (c) { _filterState[c.course_id] = newVal; });
+        checksContainer.querySelectorAll('input[type="checkbox"]').forEach(function (cb) {
+          cb.checked = newVal;
+        });
+        saveFilter();
+        applyFilter();
+        updateToggleBtn();
+      });
 
       /* ── Modal helpers ── */
       var backdrop = document.getElementById('event-modal-backdrop');
@@ -289,7 +436,6 @@
         // Raw date row
         var rawRow = document.getElementById('modal-raw-row');
         var rawText = ep.due_date_raw || '';
-        // Resolve: hide if empty or if raw just matches the dateStr
         var rawHint = document.getElementById('modal-raw-hint');
         if (!rawText || rawText === dateStr) {
           rawRow.style.display = 'none';
@@ -318,6 +464,7 @@
       });
 
       /* ── Calendar ── */
+      var _allEvents = [];
       var calendarEl = document.getElementById('calendar');
       var calendar = new FullCalendar.Calendar(calendarEl, {
         initialView: 'dayGridMonth',
@@ -327,13 +474,30 @@
           center: 'title',
           right: 'dayGridMonth,timeGridWeek,listWeek'
         },
-        events: '/api/deadlines',
         eventDisplay: 'block',
         eventClick: function(info) {
           openModal(info);
         },
       });
       calendar.render();
+
+      function applyFilter() {
+        calendar.removeAllEvents();
+        var visible = _allEvents.filter(function (ev) {
+          var cid = ev.extendedProps && ev.extendedProps.course_id;
+          return _filterState[cid] !== false;
+        });
+        if (visible.length) {
+          calendar.addEventSource(visible);
+        }
+      }
+
+      fetch('/api/deadlines')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          _allEvents = data;
+          applyFilter();
+        });
     });
   </script>
 
