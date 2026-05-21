@@ -249,12 +249,17 @@ Final exams are a special case — they often happen outside normal class meetin
 
 **Data model sketch:**
 
+Schema additions in Phase 6.5b (dismissed, user_edited), Phase 6.5c (weight,
+weight_confidence), and a future categorization phase (category) are forward-
+compatible — calendar v1 ignores unknown fields, so adding them doesn't break
+existing data.
+
 Anchor data captured during onboarding (see above); per-course overrides support off-cycle courses like study-abroad and accelerated terms.
 
 - `courses` table: id, user_id, course_id, course_name, semester_start, semester_end, term_name, created_at, updated_at
 - `class_meetings` table: id, course_id, day_of_week (mon-sun), start_time, end_time, location
 - `final_exams` table: id, course_id, date, start_time, end_time, location, user_provided (bool)
-- `deadlines` table: id, user_id, course_id, source_item_id, title, due_date_raw (verbatim from syllabus), due_date_resolved (ISO datetime, nullable), confidence_score (1-5), ai_extracted_raw, user_edited (bool), source_link (Blackboard URL), created_at, updated_at
+- `deadlines` table: id, user_id, course_id, source_item_id, title, type, category (deadline/ongoing/recurring/optional/reference, nullable), due_date_raw, due_date_resolved (ISO datetime, nullable), confidence_score (1-5), weight (float percentage, nullable), weight_confidence (1-5, nullable), dismissed (bool, default false), ai_extracted_raw, user_edited (bool), source_link (Blackboard URL), created_at, updated_at
 - `notifications` table: id, deadline_id, channel (email/sms/push), trigger_offset_minutes, sent_at (nullable), status
 - `user_notification_preferences`: defaults per item type, quiet hours, digest settings, weekly digest opt-in
 
@@ -265,11 +270,66 @@ AI extraction is good but never perfect. Professors change dates after syllabi a
 **Scope:**
 - Editable fields in the calendar event modal: title, date, time, type, notes
 - "Reset to AI extraction" path to revert user edits
-- Edits persist across aggregator re-runs (next pipeline run respects user overrides, never silently overwrites)
-- Edits include a flag distinguishing them from AI-extracted values, so the UI can visually indicate "this was edited by you"
-- Open question for Phase 10: where edits live (localStorage works for single-device single-user; production needs server-side storage tied to user accounts)
+- "Add to calendar" action on needs_attention items — user clicks an item on
+  the needs-attention page, gets prompted to fill in/edit the missing date
+  (or confirm a low-confidence one), then the item moves to the resolved
+  bucket and appears on the calendar.
+- "Not a deadline" dismissal action on needs_attention items AND on calendar
+  events. Dismissed items disappear from both views but are preserved in the
+  data layer with a `dismissed: true` flag. A "Show dismissed" toggle lets
+  users recover them.
+- Edits persist across aggregator re-runs (next pipeline run respects user
+  overrides, never silently overwrites). Implementation likely involves a
+  separate user_overrides.json file the aggregator merges in after parsing.
+- Edits include a flag distinguishing them from AI-extracted values, so the
+  UI can visually indicate "this was edited by you" (e.g., small pencil icon
+  next to edited fields)
+- Open question for Phase 10: where overrides live (localStorage works for
+  single-device single-user; production needs server-side storage tied to
+  user accounts)
 
 **Cross-reference:** Phase 6.5b is a prerequisite for Phase 7 (study tools) to be useful — incorrect AI-extracted deadlines feeding into study guides would compound errors.
+
+### Phase 6.5c: Weight extraction and importance UI
+
+Currently the extraction pipeline captures dates, types, and confidence —
+but not assignment weight (how much each item contributes to the course
+grade). Adding weight unlocks two things: (1) students can see at a glance
+which deadlines are high-stakes vs. minor, and (2) Phase 7 study tools can
+prioritize materials by weight ("focus my practice test on items worth
+≥10% of my grade").
+
+**Scope:**
+- Update the preprocessing prompt in query.py to extract a `weight` field
+  when available, expressed as a percentage. Match assignments to the
+  syllabus' grading breakdown section. When weight is unclear or
+  aggregated (e.g., "Essays: 30%" for three essays without per-essay
+  breakdown), the AI should distribute evenly and flag with a lower
+  weight_confidence score.
+- Add `weight` (float, nullable) and `weight_confidence` (1-5, nullable)
+  fields to each deadline in deadlines.json
+- Display weight in the calendar event modal as a percentage. Add a small
+  badge (⭐ or similar) for high-stakes items (threshold: ≥15% by default,
+  configurable later)
+- Add a "High stakes only" filter toggle to the calendar — shows only items
+  with weight ≥ threshold
+- When weight is null/unknown, show "Weight: unknown" in the modal. Don't
+  hide the row — surfacing the uncertainty matters
+- Cross-reference Phase 7: weight extraction is a prerequisite for
+  weight-aware study tools
+
+Future consideration — item categorization: beyond weight, items vary by
+*kind* in ways that affect treatment. A weekly discussion isn't really a
+"deadline" the same way a final exam is; ongoing participation isn't a
+calendar event at all. A future phase (likely 6.5d or folded into Phase 7)
+may introduce a `category` field with values like: deadline, ongoing,
+recurring, optional, reference. Categories would drive differentiated UI:
+ongoing items become a sidebar widget, recurring items render as repeating
+calendar events, optional items get a softer visual treatment, reference
+items (practice quizzes with no due date) get filtered to a separate
+"Resources" tab. Deferring this until 6.5b and 6.5c land — the right
+taxonomy will be clearer after seeing user behavior on the simpler
+dismissal-based approach.
 
 ### Phase 7: Study tools
 - Study guides generated from course materials
