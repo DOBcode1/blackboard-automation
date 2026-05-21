@@ -223,7 +223,7 @@ The screenshot method is the demo-friendly path — drag-drop-done is the magic 
 - Recurring events for weekly assignments, labs, discussion posts
 - Confidence-aware UI: deadlines with confidence 4-5 display normally; confidence 1-3 entries show a "review" badge and don't trigger notifications until user confirms.
 
-**Google Calendar sync (Phase 6.5b):**
+**Google Calendar sync (Phase 6.5d):**
 - OAuth flow on first opt-in
 - Two-way sync: events added in-app push to Google Calendar; changes made in Google Calendar pull back
 - User can choose which courses sync (e.g., sync academic courses, skip electives)
@@ -234,7 +234,7 @@ The screenshot method is the demo-friendly path — drag-drop-done is the magic 
 - Global defaults the user sets once ("always notify me 48h before any midterm/final")
 - **Delivery channels:**
   - **Email** (Phase 6.5 launch): SendGrid or Resend, branded templates
-  - **SMS** (Phase 6.5b): Twilio integration, user verifies phone number on signup, opt-in per event type, daily digest option to avoid spam
+  - **SMS** (Phase 6.5e): Twilio integration, user verifies phone number on signup, opt-in per event type, daily digest option to avoid spam
   - **Push notifications** (Phase 10, when mobile/PWA ships)
 - Digest mode: "Your week ahead" email every Sunday with all upcoming deadlines
 - Smart notifications: AI infers urgency from item type (final exam = earlier and more reminders than weekly discussion post)
@@ -330,6 +330,16 @@ items (practice quizzes with no due date) get filtered to a separate
 "Resources" tab. Deferring this until 6.5b and 6.5c land — the right
 taxonomy will be clearer after seeing user behavior on the simpler
 dismissal-based approach.
+
+### Phase 6.5d: Google Calendar sync
+
+(See description in the Phase 6.5 block above. Full subsection to be expanded
+when work begins.)
+
+### Phase 6.5e: SMS notifications
+
+(See description in the Phase 6.5 Notification system section above. Full
+subsection to be expanded when work begins.)
 
 ### Phase 7: Study tools
 - Study guides generated from course materials
