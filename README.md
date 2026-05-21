@@ -363,6 +363,17 @@ subsection to be expanded when work begins.)
 - Cloud-hosted scraper (users authenticate via Blackboard credentials, scraper runs server-side)
 - Mobile-responsive / PWA
 - Push notifications via service worker
+- **Structured query routing in chat:** Refactor chat so deadline-shaped
+  questions ("what's due tomorrow", "when is my Ethics final", "show me all
+  my exams") query the deadlines database directly and short-circuit the LLM.
+  Free-form questions ("explain photosynthesis", "summarize chapter 7") still
+  go through the LLM as today. Benefits: faster responses (no LLM round-trip
+  for structured questions), lower API costs at scale, and structured
+  questions become deterministic — no chance of the LLM hallucinating a date.
+  Prerequisite: the Postgres-backed deadlines table from this phase. Until
+  then, Phase 6.5b's chat sync (markdown rewriting with user overrides applied
+  in memory before sending to the LLM) handles user edits correctly across
+  any LLM choice.
 
 ### Phase 11: Multi-school support
 - Generalize scraper across Blackboard Ultra deployments at different universities
