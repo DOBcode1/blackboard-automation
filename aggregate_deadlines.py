@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from audit_deadlines import parse_assignments_from_summary
+from overrides_helper import load_overrides, apply_override_to_deadline, get_override
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -129,13 +130,17 @@ def aggregate(preprocessed_path: Path) -> dict:
 
     course_names = _load_course_names(preprocessed_path)
     window_start, window_end = _load_semester_window()
+    overrides = load_overrides()
 
     # Build per-course title → index counter for stable IDs
     title_counters: dict[str, defaultdict] = {}
 
     resolved_items: list[dict] = []
     needs_attention_items: list[dict] = []
+    dismissed_items: list[dict] = []
     seen_course_ids: list[str] = []
+    extracted_ids: set[str] = set()
+    overrides_applied: set[str] = set()
 
     for course_id, summary_text in raw_data.items():
         if not isinstance(summary_text, str):
@@ -181,10 +186,31 @@ def aggregate(preprocessed_path: Path) -> dict:
                 "source_item_id": None,  # not available from preprocessed text
             }
 
-            # Semester-window check
+            entry_id = entry["id"]
+            extracted_ids.add(entry_id)
+
+            # Apply user override if present
+            override = get_override(overrides, entry_id)
+            if override is not None:
+                entry = apply_override_to_deadline(entry, override)
+                overrides_applied.add(entry_id)
+
+            # Rule (a): dismissed → dismissed bucket, skip all further bucketing
+            if entry.get("dismissed"):
+                dismissed_items.append(entry)
+                continue
+
+            # Re-read due_date_resolved after override (user may have changed it)
+            due_resolved = entry.get("due_date_resolved")
+
+            # Rule (c): user-edited date is authoritative — treat effective confidence as 5
+            effective_confidence = confidence
+            if entry.get("user_edited") and "due_date_resolved" in entry.get("user_edited_fields", []):
+                effective_confidence = 5
+
+            # Semester-window check (against possibly-overridden due_resolved)
             flag_reason: str | None = None
             if due_resolved is not None and window_start is not None and window_end is not None:
-                # Parse just the date portion for comparison (handles both date and datetime strings)
                 due_date_str = due_resolved[:10]
                 try:
                     due_dt = datetime.fromisoformat(due_date_str)
@@ -196,18 +222,79 @@ def aggregate(preprocessed_path: Path) -> dict:
             entry["flag_reason"] = flag_reason
 
             # Bucketing: outside window → needs_attention regardless of confidence
-            # Otherwise: resolved = non-null date AND confidence >= 3
+            # Otherwise: resolved = non-null date AND effective_confidence >= 3
             if flag_reason == "outside_semester_window":
                 needs_attention_items.append(entry)
-            elif due_resolved is not None and confidence >= 3:
+            elif due_resolved is not None and effective_confidence >= 3:
                 resolved_items.append(entry)
             else:
-                # Assign specific flag_reason for needs_attention items
                 if due_resolved is None:
                     entry["flag_reason"] = "unresolved_date"
                 else:
                     entry["flag_reason"] = "low_confidence"
                 needs_attention_items.append(entry)
+
+    # Rule (b): synthesize manual_add entries from overrides whose IDs weren't extracted
+    for ov_id, ov_entry in overrides.get("overrides", {}).items():
+        if not ov_entry.get("manual_add", False):
+            continue
+        if ov_id in extracted_ids:
+            continue
+
+        edits = ov_entry.get("edits", {})
+        due_resolved_raw = edits.get("due_date_resolved") or ""
+        due_resolved = _resolve_date(due_resolved_raw)
+
+        # Parse course_id from id prefix (format: course_id__slug__idx)
+        parts = ov_id.split("__", 2)
+        synth_course_id = parts[0] if parts else "unknown"
+        synth_course_name = course_names.get(synth_course_id, synth_course_id)
+
+        synth_entry: dict = {
+            "id": ov_id,
+            "course_id": synth_course_id,
+            "course_name": synth_course_name,
+            "title": edits.get("title") or "Untitled manual item",
+            "type": edits.get("type") or "manual",
+            "due_date_raw": "",
+            "due_date_resolved": due_resolved,
+            "confidence_score": 5,
+            "flag_reason": None,
+            "source_link": None,
+            "source_item_id": None,
+            "user_edited": True,
+            "manual_add": True,
+        }
+
+        overrides_applied.add(ov_id)
+
+        if ov_entry.get("dismissed", False):
+            synth_entry["dismissed"] = True
+            dismissed_items.append(synth_entry)
+            continue
+
+        # Semester-window check
+        flag_reason = None
+        if due_resolved is not None and window_start is not None and window_end is not None:
+            due_date_str = due_resolved[:10]
+            try:
+                due_dt = datetime.fromisoformat(due_date_str)
+                if due_dt < window_start or due_dt > window_end:
+                    flag_reason = "outside_semester_window"
+            except ValueError:
+                pass
+
+        synth_entry["flag_reason"] = flag_reason
+
+        if flag_reason == "outside_semester_window":
+            needs_attention_items.append(synth_entry)
+        elif due_resolved is not None:
+            # User-provided date is authoritative (confidence=5); mark as user_added
+            synth_entry["flag_reason"] = "user_added"
+            resolved_items.append(synth_entry)
+        else:
+            synth_entry["flag_reason"] = "unresolved_date"
+            needs_attention_items.append(synth_entry)
 
     # Unique ordered course list
     unique_course_ids = list(dict.fromkeys(seen_course_ids))
@@ -216,7 +303,7 @@ def aggregate(preprocessed_path: Path) -> dict:
         for cid in unique_course_ids
     ]
 
-    total = len(resolved_items) + len(needs_attention_items)
+    total = len(resolved_items) + len(needs_attention_items) + len(dismissed_items)
     flagged_window_count = sum(
         1 for e in needs_attention_items if e.get("flag_reason") == "outside_semester_window"
     )
@@ -228,10 +315,13 @@ def aggregate(preprocessed_path: Path) -> dict:
         "deadline_count": total,
         "resolved_count": len(resolved_items),
         "needs_attention_count": len(needs_attention_items),
+        "dismissed_count": len(dismissed_items),
         "flagged_outside_window_count": flagged_window_count,
+        "overrides_applied_count": len(overrides_applied),
         "courses": courses,
         "resolved": resolved_items,
         "needs_attention": needs_attention_items,
+        "dismissed": dismissed_items,
     }
 
 
@@ -270,6 +360,9 @@ def main() -> None:
     print(f"Resolved (calendar-ready): {result['resolved_count']}")
     print(f"Needs attention: {result['needs_attention_count']}")
     print(f"Flagged outside semester window: {result['flagged_outside_window_count']}")
+    print(f"Dismissed: {result['dismissed_count']}")
+    if result["overrides_applied_count"]:
+        print(f"Applied user overrides: {result['overrides_applied_count']}")
     print(f"Written to: {out_path}")
 
 
