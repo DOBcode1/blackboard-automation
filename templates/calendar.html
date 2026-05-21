@@ -76,6 +76,96 @@
     box-shadow: 0 1px 4px rgba(0,0,0,0.06);
   }
 
+  /* Event modal */
+  #event-modal-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.5);
+    z-index: 1000;
+    align-items: center;
+    justify-content: center;
+  }
+  #event-modal-backdrop.open {
+    display: flex;
+  }
+  #event-modal-card {
+    background: #fff;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+    padding: 24px;
+    max-width: 480px;
+    width: calc(100% - 48px);
+    position: relative;
+  }
+  #event-modal-close {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    background: none;
+    border: none;
+    font-size: 20px;
+    line-height: 1;
+    color: #6b7a8d;
+    cursor: pointer;
+    padding: 4px 6px;
+    border-radius: 4px;
+  }
+  #event-modal-close:hover { background: #f0f4f8; color: #1a1a2e; }
+  #event-modal-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #1a1a2e;
+    margin-bottom: 8px;
+    padding-right: 28px;
+    line-height: 1.35;
+  }
+  .modal-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #374151;
+    margin-top: 10px;
+  }
+  .modal-label {
+    font-size: 12px;
+    color: #6b7a8d;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    min-width: 72px;
+  }
+  .modal-course-dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .modal-confidence-dots {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+  }
+  .modal-confidence-dots span {
+    display: inline-block;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    border: 1.5px solid transparent;
+  }
+  .modal-conf-filled { /* color set inline via JS */ }
+  .modal-conf-empty { background: #e5e7eb !important; border-color: #e5e7eb !important; }
+  .modal-raw {
+    font-size: 12px;
+    color: #9ca3af;
+  }
+  hr.modal-divider {
+    border: none;
+    border-top: 1px solid #e5e7eb;
+    margin: 14px 0 4px;
+  }
+
   /* Legend */
   .legend {
     margin-top: 24px;
@@ -140,6 +230,94 @@
 
   <script>
     document.addEventListener('DOMContentLoaded', function () {
+
+      /* ── Modal helpers ── */
+      var backdrop = document.getElementById('event-modal-backdrop');
+      var card     = document.getElementById('event-modal-card');
+      var closeBtn = document.getElementById('event-modal-close');
+
+      function openModal(info) {
+        var ev   = info.event;
+        var ep   = ev.extendedProps || {};
+        var color = ev.backgroundColor || '#6b7a8d';
+
+        // Title
+        document.getElementById('event-modal-title').textContent = ev.title;
+
+        // Course
+        document.getElementById('modal-course-dot').style.background = color;
+        document.getElementById('modal-course-name').textContent = ep.course_name || '';
+
+        // Due date
+        var start = ev.start;
+        var dateStr;
+        if (ev.allDay) {
+          dateStr = new Intl.DateTimeFormat('en-US', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+          }).format(start);
+        } else {
+          var datePart = new Intl.DateTimeFormat('en-US', {
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+          }).format(start);
+          var timePart = new Intl.DateTimeFormat('en-US', {
+            hour: 'numeric', minute: '2-digit', hour12: true
+          }).format(start);
+          dateStr = datePart + ' at ' + timePart;
+        }
+        document.getElementById('modal-due-date').textContent = dateStr;
+
+        // Type
+        var rawType = ep.type || '';
+        document.getElementById('modal-type').textContent =
+          rawType ? rawType.charAt(0).toUpperCase() + rawType.slice(1) : '—';
+
+        // Confidence dots
+        var score = typeof ep.confidence_score === 'number' ? ep.confidence_score : 0;
+        var dotsEl = document.getElementById('modal-confidence-dots');
+        dotsEl.innerHTML = '';
+        for (var i = 1; i <= 5; i++) {
+          var dot = document.createElement('span');
+          if (i <= score) {
+            dot.style.background = color;
+            dot.style.borderColor = color;
+          } else {
+            dot.classList.add('modal-conf-empty');
+          }
+          dotsEl.appendChild(dot);
+        }
+
+        // Raw date row
+        var rawRow = document.getElementById('modal-raw-row');
+        var rawText = ep.due_date_raw || '';
+        // Resolve: hide if empty or if raw just matches the dateStr
+        var rawHint = document.getElementById('modal-raw-hint');
+        if (!rawText || rawText === dateStr) {
+          rawRow.style.display = 'none';
+          rawHint.style.display = 'none';
+        } else {
+          rawRow.style.display = '';
+          rawHint.style.display = '';
+          document.getElementById('modal-raw-text').textContent = rawText;
+        }
+
+        backdrop.classList.add('open');
+        document.body.style.overflow = 'hidden';
+      }
+
+      function closeModal() {
+        backdrop.classList.remove('open');
+        document.body.style.overflow = '';
+      }
+
+      closeBtn.addEventListener('click', closeModal);
+      backdrop.addEventListener('click', function (e) {
+        if (e.target === backdrop) closeModal();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeModal();
+      });
+
+      /* ── Calendar ── */
       var calendarEl = document.getElementById('calendar');
       var calendar = new FullCalendar.Calendar(calendarEl, {
         initialView: 'dayGridMonth',
@@ -151,6 +329,9 @@
         },
         events: '/api/deadlines',
         eventDisplay: 'block',
+        eventClick: function(info) {
+          openModal(info);
+        },
       });
       calendar.render();
     });
@@ -158,6 +339,41 @@
 
   {% endif %}
 
+</div>
+
+
+<div id="event-modal-backdrop">
+  <div id="event-modal-card">
+    <button id="event-modal-close" aria-label="Close">&times;</button>
+    <div id="event-modal-title"></div>
+
+    <div class="modal-row">
+      <span class="modal-label">Course</span>
+      <span class="modal-course-dot" id="modal-course-dot"></span>
+      <span id="modal-course-name"></span>
+    </div>
+
+    <div class="modal-row">
+      <span class="modal-label">Due</span>
+      <span id="modal-due-date"></span>
+    </div>
+
+    <div class="modal-row">
+      <span class="modal-label">Type</span>
+      <span id="modal-type"></span>
+    </div>
+
+    <div class="modal-row">
+      <span class="modal-label">Confidence</span>
+      <div class="modal-confidence-dots" id="modal-confidence-dots"></div>
+    </div>
+
+    <div class="modal-row" id="modal-raw-row">
+      <span class="modal-label" style="color:#9ca3af;">As written</span>
+      <span class="modal-raw" id="modal-raw-text"></span>
+    </div>
+    <div id="modal-raw-hint" style="display:none;font-size:11px;color:#9ca3af;font-style:italic;margin-top:4px;">Original text from the syllabus or Blackboard. The resolved date may not always match (e.g., Blackboard placeholders).</div>
+  </div>
 </div>
 
 </body>

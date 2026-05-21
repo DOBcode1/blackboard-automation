@@ -258,6 +258,19 @@ Anchor data captured during onboarding (see above); per-course overrides support
 - `notifications` table: id, deadline_id, channel (email/sms/push), trigger_offset_minutes, sent_at (nullable), status
 - `user_notification_preferences`: defaults per item type, quiet hours, digest settings, weekly digest opt-in
 
+### Phase 6.5b: Manual deadline editing
+
+AI extraction is good but never perfect. Professors change dates after syllabi are published, Blackboard placeholders mask real deadlines (e.g., the 11:59 PM default on assignment pages when the actual deadline is during class), and the AI sometimes misreads ambiguous text. Users need a way to fix individual deadlines without re-running the entire pipeline.
+
+**Scope:**
+- Editable fields in the calendar event modal: title, date, time, type, notes
+- "Reset to AI extraction" path to revert user edits
+- Edits persist across aggregator re-runs (next pipeline run respects user overrides, never silently overwrites)
+- Edits include a flag distinguishing them from AI-extracted values, so the UI can visually indicate "this was edited by you"
+- Open question for Phase 10: where edits live (localStorage works for single-device single-user; production needs server-side storage tied to user accounts)
+
+**Cross-reference:** Phase 6.5b is a prerequisite for Phase 7 (study tools) to be useful — incorrect AI-extracted deadlines feeding into study guides would compound errors.
+
 ### Phase 7: Study tools
 - Study guides generated from course materials
 - Practice tests with AI-generated questions
@@ -271,6 +284,7 @@ Anchor data captured during onboarding (see above); per-course overrides support
 ### Phase 9: Announcement & message scraping
 - Course announcements pulled into the deadline extractor (professors often announce deadline changes here)
 - Direct messages parsed for actionable items
+- When announcement scraping is added, the calendar modal's "As written" text should broaden its source labeling — announcements become a third legitimate source of raw deadline text alongside syllabi and Blackboard assignment pages.
 
 ### Phase 10: Production web product
 - Next.js frontend, FastAPI backend, PostgreSQL
