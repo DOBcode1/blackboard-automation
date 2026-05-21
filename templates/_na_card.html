@@ -1,0 +1,16 @@
+<div class="card">
+  <div class="card-course">
+    <span class="course-dot" style="background: {{ item.course_color }};"></span>
+    <span class="course-name">{{ item.course_name }}</span>
+  </div>
+  <div class="card-title">{{ item.title }}</div>
+  {% if item.due_date_resolved %}
+  <div class="card-meta"><span class="label">Resolved as</span>{{ item.due_date_resolved }}</div>
+  {% endif %}
+  {% if item.due_date_raw %}
+  <div class="card-meta"><span class="label">As written</span>{{ item.due_date_raw }}</div>
+  {% endif %}
+  {% if item.confidence_score is not none %}
+  <div class="card-meta"><span class="label">Confidence</span>{{ item.confidence_score }}/5</div>
+  {% endif %}
+</div>

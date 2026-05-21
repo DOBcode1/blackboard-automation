@@ -163,6 +163,38 @@ async def calendar_page(request: Request):
     )
 
 
+@app.get("/calendar/needs-attention")
+async def needs_attention_page(request: Request):
+    data = _load_deadlines()
+    if data is None:
+        return templates.TemplateResponse(
+            request,
+            "needs_attention.html",
+            {
+                "items": None,
+                "generated_at": None,
+                "total_count": 0,
+                "active_page": "calendar",
+            },
+        )
+
+    color_map = _build_course_colors(data)
+    items = [
+        {**item, "course_color": color_map.get(item.get("course_id", ""), "#6b7a8d")}
+        for item in data.get("needs_attention", [])
+    ]
+    return templates.TemplateResponse(
+        request,
+        "needs_attention.html",
+        {
+            "items": items,
+            "generated_at": data.get("generated_at", ""),
+            "total_count": len(items),
+            "active_page": "calendar",
+        },
+    )
+
+
 @app.get("/api/deadlines")
 async def api_deadlines():
     data = _load_deadlines()
