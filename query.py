@@ -26,6 +26,8 @@ SYSTEM_PROMPT = (
     "\n\nWhen generating study guides, practice tests, or other study materials, clearly state at the beginning of your response whether the content is based entirely on course materials from Blackboard, or whether you are also drawing on your general knowledge to supplement. If you use general knowledge to fill gaps, flag those specific sections so the student knows what came from their course vs. general knowledge."
     "\n\nAt the end of your response, include a 'Sources Used' section that lists the specific Blackboard items you referenced to answer the question. For each source, include:\n- The item title\n- The course name\n- The container/folder it's in (if any)\n- The content type (PDF, Text Document, Assignment, etc.)\nFormat as a compact list. Only include items you actually used in your answer, not every item in the context."
     "\n\nAfter answering a question, suggest 2-3 brief follow-up actions the student might want to take. For example: going deeper into specific materials, creating a day-by-day study plan, summarizing a specific document, comparing assignments across courses, or identifying which topics to prioritize. Keep suggestions concise and as a short bulleted list at the end of your response."
+    "\n\nThe deadline information below has been corrected based on user edits where applicable. Treat dates and titles as authoritative."
+    "\n\nIf the context begins with a [USER-CONFIRMED OVERRIDES] block, those entries are authoritative. Trust them over anything that follows, including raw document text."
 )
 
 def load_semester_config() -> dict:
@@ -431,6 +433,197 @@ def print_courses(course_map: dict[str, str]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Override → markdown rewriting
+# ---------------------------------------------------------------------------
+
+def _find_assignment_block(markdown: str, title: str) -> tuple[int, int] | None:
+    """Return (start, end) offsets of the ### Assignment block whose Name matches title."""
+    search = title.lower().strip()
+    for m in re.finditer(r'### Assignment\s*\n', markdown, re.IGNORECASE):
+        block_start = m.start()
+        rest = markdown[m.end():]
+        next_h = re.search(r'\n(?=###)', rest)
+        if next_h:
+            block_end = m.end() + next_h.start() + 1
+        else:
+            block_end = len(markdown)
+        block = markdown[block_start:block_end]
+        nm = re.search(r'\*\*Name:\*\*\s*(.+)', block)
+        if nm and nm.group(1).strip().lower() == search:
+            return block_start, block_end
+    return None
+
+
+def _update_block_field(block: str, field: str, value: str) -> str:
+    """Replace a single field line within an ### Assignment block."""
+    if field == "title":
+        return re.sub(r'(\*\*Name:\*\*\s*).+', lambda m: m.group(1) + value, block)
+    if field == "due_date_resolved":
+        return re.sub(r'(\*\*Due Date Resolved:\*\*\s*).+', lambda m: m.group(1) + value, block)
+    if field == "type":
+        return re.sub(r'(\*\*Type:\*\*\s*).+', lambda m: m.group(1) + value, block)
+    if field == "notes":
+        if re.search(r'\*\*User notes:\*\*', block):
+            return re.sub(r'(\*\*User notes:\*\*\s*).+', lambda m: m.group(1) + value, block)
+        return block.rstrip('\n') + f'\n- **User notes:** {value}\n'
+    return block
+
+
+def _build_manual_assignment_block(item: dict) -> str:
+    """Build a new ### Assignment block from a manual_add override item."""
+    lines = [
+        "### Assignment",
+        f"- **Name:** {item.get('title', 'Untitled')}",
+        f"- **Type:** {item.get('type', 'manual')}",
+        "- **Due Date:** (user-added)",
+        f"- **Due Date Resolved:** {item.get('due_date_resolved') or 'UNRESOLVED'}",
+        "- **Weight:** not specified",
+        "- **Confidence:** 5",
+    ]
+    notes = item.get("notes")
+    if notes:
+        lines.append(f"- **User notes:** {notes}")
+    return "\n".join(lines) + "\n"
+
+
+def apply_overrides_to_markdown(course_id: str, markdown: str, deadlines_data: dict) -> str:
+    """
+    Rewrite ### Assignment blocks in a preprocessed course summary to reflect
+    user overrides from deadlines_data (the merged view in deadlines.json).
+
+    - dismissed items: block removed entirely
+    - user_edited items: named fields updated in-place
+    - manual_add items not yet in markdown: new block appended
+    """
+    override_items = []
+    for section in ("resolved", "needs_attention", "dismissed"):
+        for item in deadlines_data.get(section, []):
+            if item.get("course_id") != course_id:
+                continue
+            if item.get("user_edited") or item.get("dismissed") or item.get("manual_add"):
+                override_items.append(item)
+
+    if not override_items:
+        return markdown
+
+    for item in override_items:
+        is_dismissed = item.get("dismissed", False)
+        is_user_edited = item.get("user_edited", False)
+        is_manual_add = item.get("manual_add", False)
+        title = item.get("title", "")
+
+        # For user-edited items, the current title may differ from the markdown;
+        # use ai_original.title to locate the original block.
+        search_title = title
+        if is_user_edited:
+            ai_orig = item.get("ai_original", {})
+            if ai_orig.get("title"):
+                search_title = ai_orig["title"]
+
+        if is_manual_add and not is_dismissed:
+            span = _find_assignment_block(markdown, search_title)
+            if span is None and search_title != title:
+                span = _find_assignment_block(markdown, title)
+            if span is None:
+                new_block = _build_manual_assignment_block(item)
+                sec = re.search(r'(## ASSIGNMENTS.*?)(\n## |\Z)', markdown, re.DOTALL | re.IGNORECASE)
+                if sec:
+                    markdown = markdown[:sec.end(1)] + "\n" + new_block + markdown[sec.end(1):]
+                else:
+                    markdown = markdown.rstrip('\n') + "\n\n" + new_block
+            continue
+
+        span = _find_assignment_block(markdown, search_title)
+        if span is None and search_title != title:
+            span = _find_assignment_block(markdown, title)
+
+        if span is None:
+            print(
+                f"[chat-sync] Warning: could not find assignment '{search_title}' "
+                f"(course {course_id}) — skipping override",
+                file=sys.stderr,
+            )
+            continue
+
+        start, end = span
+
+        if is_dismissed:
+            markdown = markdown[:start] + markdown[end:]
+        elif is_user_edited:
+            block = markdown[start:end]
+            for field in item.get("user_edited_fields", []):
+                val = item.get(field)
+                if val is not None:
+                    block = _update_block_field(block, field, str(val))
+            markdown = markdown[:start] + block + markdown[end:]
+
+    return markdown
+
+
+# ---------------------------------------------------------------------------
+# Overrides block
+# ---------------------------------------------------------------------------
+
+def build_overrides_block(deadlines_data: dict, course_map: dict) -> str:
+    """
+    Build a [USER-CONFIRMED OVERRIDES] block from all user_edited, dismissed,
+    or manual_add items across all courses. Returns an empty string if none exist.
+    """
+    if not deadlines_data:
+        return ""
+
+    # Collect overrides grouped by course_id
+    by_course: dict[str, list[dict]] = {}
+    for section in ("resolved", "needs_attention", "dismissed"):
+        for item in deadlines_data.get(section, []):
+            if not (item.get("user_edited") or item.get("dismissed") or item.get("manual_add")):
+                continue
+            cid = item.get("course_id", "")
+            by_course.setdefault(cid, []).append(item)
+
+    if not by_course:
+        return ""
+
+    lines = [
+        "[USER-CONFIRMED OVERRIDES — AUTHORITATIVE]",
+        "The user has manually corrected the following deadlines. These supersede any",
+        "conflicting information in summaries, document text, or the item index below.",
+        "",
+    ]
+
+    for cid, items in by_course.items():
+        cname = course_map.get(cid, cid)
+        lines.append(f"Course: {cname}")
+        for item in items:
+            title = item.get("title", "(untitled)")
+            lines.append(f'- "{title}"')
+
+            if item.get("dismissed"):
+                lines.append("    Status: User dismissed (not a real deadline; ignore)")
+            elif item.get("manual_add"):
+                due = item.get("due_date_resolved") or item.get("due_date") or "UNRESOLVED"
+                itype = item.get("type", "")
+                lines.append(f"    Due: {due}")
+                if itype:
+                    lines.append(f"    Type: {itype}")
+                lines.append("    Status: User-added manually")
+            elif item.get("user_edited"):
+                due = item.get("due_date_resolved") or item.get("due_date") or "UNRESOLVED"
+                itype = item.get("type", "")
+                lines.append(f"    Due: {due}")
+                if itype:
+                    lines.append(f"    Type: {itype}")
+                ai_orig = item.get("ai_original", {})
+                orig_due = ai_orig.get("due_date_resolved") or ai_orig.get("due_date") or ""
+                orig_note = f" (original AI extraction was {orig_due})" if orig_due else ""
+                lines.append(f"    Status: User-edited{orig_note}")
+
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+# ---------------------------------------------------------------------------
 # API interaction
 # ---------------------------------------------------------------------------
 
@@ -438,15 +631,20 @@ def build_context(course_ids: list[str], course_map: dict[str, str],
                   compact_index: dict[str, str],
                   course_summaries: dict[str, str],
                   full_texts: dict[str, dict[str, str]],
-                  question: str) -> str:
+                  question: str,
+                  deadlines_data: dict | None = None) -> str:
+    overrides_block = build_overrides_block(deadlines_data or {}, course_map)
+
     blocks = []
     for cid in course_ids:
         cname = course_map.get(cid, cid)
         parts = []
 
-        # 1. Pre-processed summary
+        # 1. Pre-processed summary (with user overrides applied)
         summary = course_summaries.get(cid)
         if summary:
+            if deadlines_data is not None:
+                summary = apply_overrides_to_markdown(cid, summary, deadlines_data)
             parts.append(f"[Pre-processed Course Summary: {cname}]\n{summary}")
 
         # 2. Compact index
@@ -463,7 +661,10 @@ def build_context(course_ids: list[str], course_map: dict[str, str],
 
         blocks.append("\n\n".join(parts))
 
-    return "\n\n---\n\n".join(blocks)
+    body = "\n\n---\n\n".join(blocks)
+    if overrides_block:
+        return overrides_block + "\n---\n\n" + body
+    return body
 
 
 def ask(client: anthropic.Anthropic, history: list[dict],
@@ -517,6 +718,17 @@ def main() -> None:
     compact_index, full_texts = build_course_indexes(data)
     course_map = build_course_map(data)
 
+    deadlines_data: dict | None = None
+    deadlines_path = Path("output/deadlines.json")
+    if deadlines_path.exists():
+        try:
+            with open(deadlines_path, encoding="utf-8") as f:
+                deadlines_data = json.load(f)
+        except Exception as exc:
+            print(f"Warning: could not load deadlines.json ({exc}) — overrides will not apply to chat.", file=sys.stderr)
+    else:
+        print("Note: output/deadlines.json not found — overrides will not apply to chat.", file=sys.stderr)
+
     if not course_map:
         print("No courses found in file.")
         sys.exit(1)
@@ -568,7 +780,8 @@ def main() -> None:
 
         context = build_context(
             matched_ids, course_map, compact_index,
-            course_summaries, full_texts, raw
+            course_summaries, full_texts, raw,
+            deadlines_data,
         )
 
         try:

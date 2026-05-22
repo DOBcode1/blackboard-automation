@@ -107,6 +107,7 @@ _course_map: dict[str, str] = {}
 _course_summaries: dict[str, str] = {}
 _client: anthropic.Anthropic | None = None
 _json_path: str = ""
+_deadlines_data: dict | None = None
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -464,9 +465,14 @@ async def chat(req: ChatRequest):
             short_label(_course_map[cid]) for cid in matched_ids
         )
 
+    # Reload deadlines fresh on each request so edits applied while the app
+    # is running are reflected immediately without a restart.
+    current_deadlines = _load_deadlines() or _deadlines_data
+
     context = build_context(
         matched_ids, _course_map, _compact_index,
         _course_summaries, _full_texts, question,
+        current_deadlines,
     )
 
     user_content = f"[Course Content]\n{context}\n\n[Question]\n{question}"
@@ -499,7 +505,7 @@ async def chat(req: ChatRequest):
 
 def startup(json_path: str) -> None:
     global _data, _compact_index, _full_texts, _course_map, _course_summaries
-    global _client, _json_path
+    global _client, _json_path, _deadlines_data
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -527,6 +533,17 @@ def startup(json_path: str) -> None:
     _course_summaries = load_or_preprocess(
         _client, _data, _full_texts, _compact_index, json_path, _semester_config
     )
+
+    if os.path.exists(_DEADLINES_PATH):
+        try:
+            with open(_DEADLINES_PATH, encoding="utf-8") as f:
+                _deadlines_data = json.load(f)
+            print(f"Loaded deadlines from {_DEADLINES_PATH}.")
+        except Exception as exc:
+            print(f"Warning: could not load {_DEADLINES_PATH} ({exc}) — overrides will not apply to chat.")
+    else:
+        print(f"Note: {_DEADLINES_PATH} not found — overrides will not apply to chat.")
+
     print("Ready.\n")
 
 
