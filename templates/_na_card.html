@@ -20,6 +20,7 @@
             data-due="{{ (item.due_date_resolved or '') | e }}"
             data-type="{{ (item.type or '') | e }}"
             data-flag="{{ (item.flag_reason or '') | e }}"
+            data-user-edited="{{ 'true' if item.user_edited else 'false' }}"
     >{% if item.flag_reason == 'outside_semester_window' %}Confirm date{% else %}Add to calendar{% endif %}</button>
     <button class="btn-text btn-sm dismiss-btn"
             data-id="{{ item.id }}"

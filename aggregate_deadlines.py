@@ -208,9 +208,13 @@ def aggregate(preprocessed_path: Path) -> dict:
             if entry.get("user_edited") and "due_date_resolved" in entry.get("user_edited_fields", []):
                 effective_confidence = 5
 
-            # Semester-window check (against possibly-overridden due_resolved)
+            # Semester-window check (against possibly-overridden due_resolved).
+            # User-edited entries skip this check — the user has explicitly confirmed
+            # the date through the UI warning dialog, so re-flagging it is wrong.
             flag_reason: str | None = None
-            if due_resolved is not None and window_start is not None and window_end is not None:
+            if (due_resolved is not None
+                    and window_start is not None and window_end is not None
+                    and not entry.get("user_edited")):
                 due_date_str = due_resolved[:10]
                 try:
                     due_dt = datetime.fromisoformat(due_date_str)
@@ -273,22 +277,11 @@ def aggregate(preprocessed_path: Path) -> dict:
             dismissed_items.append(synth_entry)
             continue
 
-        # Semester-window check
-        flag_reason = None
-        if due_resolved is not None and window_start is not None and window_end is not None:
-            due_date_str = due_resolved[:10]
-            try:
-                due_dt = datetime.fromisoformat(due_date_str)
-                if due_dt < window_start or due_dt > window_end:
-                    flag_reason = "outside_semester_window"
-            except ValueError:
-                pass
+        # Manual-add entries are always user-authoritative; skip the semester-window
+        # check entirely (same rationale as user-edited entries in the main loop).
+        synth_entry["flag_reason"] = None
 
-        synth_entry["flag_reason"] = flag_reason
-
-        if flag_reason == "outside_semester_window":
-            needs_attention_items.append(synth_entry)
-        elif due_resolved is not None:
+        if due_resolved is not None:
             # User-provided date is authoritative (confidence=5); mark as user_added
             synth_entry["flag_reason"] = "user_added"
             resolved_items.append(synth_entry)

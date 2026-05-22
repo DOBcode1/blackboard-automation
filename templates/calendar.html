@@ -378,6 +378,9 @@
   {% else %}
 
   <script type="application/json" id="courses-data">{{ courses | tojson }}</script>
+  <script type="application/json" id="semester-config-data">
+  {"semester_start": "{{ semester_start }}", "semester_end": "{{ semester_end }}"}
+  </script>
 
   <div class="filter-bar" id="filter-bar">
     <span class="filter-label">Show courses:</span>
@@ -400,6 +403,56 @@
 
   <script>
     document.addEventListener('DOMContentLoaded', function () {
+
+      /* ── Semester config ── */
+      var _semConfig = (function() {
+        try { return JSON.parse(document.getElementById('semester-config-data').textContent); }
+        catch(e) { return {}; }
+      })();
+
+      /* ── Date anomaly check helper ── */
+      function checkDateAnomaly(submittedDateStr, allOtherDates, semStart, semEnd) {
+        var submitted = new Date(submittedDateStr.indexOf('T') !== -1
+          ? submittedDateStr
+          : submittedDateStr + 'T12:00:00');
+        if (isNaN(submitted.getTime())) return null;
+
+        var fmtFull  = new Intl.DateTimeFormat('en-US', {dateStyle: 'full'});
+        var fmtShort = new Intl.DateTimeFormat('en-US', {month: 'long', day: 'numeric', year: 'numeric'});
+        var submittedFmt = fmtFull.format(submitted);
+
+        var semesterOutOfRange = false;
+        var semStartDate, semEndDate, semFmt = '';
+        if (semStart && semEnd) {
+          semStartDate = new Date(semStart + 'T12:00:00');
+          semEndDate   = new Date(semEnd   + 'T12:00:00');
+          var earlyBound = new Date(semStartDate.getTime() - 7  * 86400000);
+          var lateBound  = new Date(semEndDate.getTime()   + 30 * 86400000);
+          semesterOutOfRange = submitted < earlyBound || submitted > lateBound;
+          semFmt = fmtShort.format(semStartDate) + ' to ' + fmtShort.format(semEndDate);
+        }
+
+        var isOutlier = false;
+        var validOther = (allOtherDates || []).map(function(d) {
+          var dt = new Date((d || '').substring(0, 10) + 'T12:00:00');
+          return isNaN(dt.getTime()) ? null : dt;
+        }).filter(Boolean);
+        if (validOther.length >= 2) {
+          var minDist = Infinity;
+          validOther.forEach(function(d) {
+            var dist = Math.abs(submitted.getTime() - d.getTime()) / 86400000;
+            if (dist < minDist) minDist = dist;
+          });
+          isOutlier = minDist > 21;
+        }
+
+        if (!semesterOutOfRange && !isOutlier) return null;
+        if (semesterOutOfRange && isOutlier)
+          return 'The date you selected (' + submittedFmt + ') is both outside your semester (' + semFmt + ') AND more than 3 weeks away from your other deadlines. Add it anyway?';
+        if (semesterOutOfRange)
+          return 'The date you selected (' + submittedFmt + ') falls outside your semester (' + semFmt + '). Add it anyway?';
+        return 'The date you selected (' + submittedFmt + ') is more than 3 weeks away from your other deadlines. Add it anyway?';
+      }
 
       /* ── Course data & filter state ── */
       var courses = JSON.parse(document.getElementById('courses-data').textContent);
@@ -534,6 +587,7 @@
         // Title + edited badge
         document.getElementById('modal-title-text').textContent = m.title;
         document.getElementById('modal-edited-badge').style.display = ep.user_edited ? '' : 'none';
+        document.getElementById('modal-btn-reset-view').style.display = ep.user_edited ? '' : 'none';
 
         // Course
         document.getElementById('modal-course-dot').style.background = color;
@@ -722,7 +776,7 @@
 
       document.getElementById('modal-btn-dismiss').addEventListener('click', function() {
         if (!_modalData) return;
-        if (!confirm('Dismiss this item from the calendar? You can recover it later from a dismissed view.')) return;
+        if (!confirm('Dismissing this item will remove it from your calendar. It will be moved to the dismissed section of Items Needing Review and can be recovered later. Continue?')) return;
         var id = _modalData.id;
         fetch('/api/overrides/' + id, {
           method: 'PUT',
@@ -766,6 +820,16 @@
           return;
         }
 
+        if (edits.due_date_resolved) {
+          var _currentDateStr = (ep.due_date_resolved || '').substring(0, 10);
+          var _otherDates = _allEvents.map(function(ev) { return ev.start; }).filter(function(d) {
+            return d && d.substring(0, 10) !== _currentDateStr;
+          });
+          var _warning = checkDateAnomaly(edits.due_date_resolved, _otherDates,
+                                          _semConfig.semester_start, _semConfig.semester_end);
+          if (_warning && !confirm(_warning)) return;
+        }
+
         var saveBtn = document.getElementById('modal-btn-save');
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving\u2026';
@@ -792,7 +856,7 @@
         });
       });
 
-      document.getElementById('modal-btn-reset').addEventListener('click', function() {
+      function handleReset() {
         if (!_modalData) return;
         if (!confirm('Reset all your edits to the original AI-extracted values?')) return;
         var id = _modalData.id;
@@ -817,7 +881,10 @@
             });
         })
         .catch(function() { showModalError('Reset failed: network error'); });
-      });
+      }
+
+      document.getElementById('modal-btn-reset').addEventListener('click', handleReset);
+      document.getElementById('modal-btn-reset-view').addEventListener('click', handleReset);
 
       /* ── Has-time checkbox toggle ── */
       document.getElementById('modal-input-has-time').addEventListener('change', function() {
@@ -968,6 +1035,7 @@
     <!-- Action buttons: view mode -->
     <div id="modal-actions-view" class="modal-actions">
       <button id="modal-btn-edit" class="btn-primary">Edit</button>
+      <button id="modal-btn-reset-view" class="btn-text" style="display:none; color:#9ca3af;">Reset to original</button>
       <button id="modal-btn-dismiss" class="btn-text">Dismiss</button>
     </div>
     <!-- Action buttons: edit mode -->

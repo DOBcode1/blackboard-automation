@@ -297,6 +297,10 @@
     margin-top: 8px;
   }
 </style>
+<script type="application/json" id="semester-config-data">
+{"semester_start": "{{ semester_start }}", "semester_end": "{{ semester_end }}"}
+</script>
+<script type="application/json" id="resolved-dates-data">{{ resolved_dates | tojson }}</script>
 </head>
 <body>
 
@@ -451,6 +455,7 @@
 
     <div class="na-form-actions">
       <button id="na-form-submit" class="btn-primary">Add to calendar</button>
+      <button id="na-btn-reset" class="btn-text" style="display:none; color:#9ca3af;">Reset to original</button>
       <button class="btn-text" onclick="closeAddModal()">Cancel</button>
     </div>
   </div>
@@ -458,10 +463,66 @@
 
 
 <script>
+  /* ── Semester config & resolved dates (from server) ── */
+  var _semConfig = (function() {
+    try { return JSON.parse(document.getElementById('semester-config-data').textContent); }
+    catch(e) { return {}; }
+  })();
+  var _resolvedDates = (function() {
+    try { return JSON.parse(document.getElementById('resolved-dates-data').textContent); }
+    catch(e) { return []; }
+  })();
+
+  /* ── Date anomaly check helper ── */
+  function checkDateAnomaly(submittedDateStr, allOtherDates, semStart, semEnd) {
+    var submitted = new Date(submittedDateStr.indexOf('T') !== -1
+      ? submittedDateStr
+      : submittedDateStr + 'T12:00:00');
+    if (isNaN(submitted.getTime())) return null;
+
+    var fmtFull  = new Intl.DateTimeFormat('en-US', {dateStyle: 'full'});
+    var fmtShort = new Intl.DateTimeFormat('en-US', {month: 'long', day: 'numeric', year: 'numeric'});
+    var submittedFmt = fmtFull.format(submitted);
+
+    // Semester range check (±7 days before start, +30 days after end)
+    var semesterOutOfRange = false;
+    var semStartDate, semEndDate, semFmt = '';
+    if (semStart && semEnd) {
+      semStartDate = new Date(semStart + 'T12:00:00');
+      semEndDate   = new Date(semEnd   + 'T12:00:00');
+      var earlyBound = new Date(semStartDate.getTime() - 7  * 86400000);
+      var lateBound  = new Date(semEndDate.getTime()   + 30 * 86400000);
+      semesterOutOfRange = submitted < earlyBound || submitted > lateBound;
+      semFmt = fmtShort.format(semStartDate) + ' to ' + fmtShort.format(semEndDate);
+    }
+
+    // Outlier check: min distance from any other resolved date > 21 days
+    var isOutlier = false;
+    var validOther = (allOtherDates || []).map(function(d) {
+      var dt = new Date((d || '').substring(0, 10) + 'T12:00:00');
+      return isNaN(dt.getTime()) ? null : dt;
+    }).filter(Boolean);
+    if (validOther.length >= 2) {
+      var minDist = Infinity;
+      validOther.forEach(function(d) {
+        var dist = Math.abs(submitted.getTime() - d.getTime()) / 86400000;
+        if (dist < minDist) minDist = dist;
+      });
+      isOutlier = minDist > 21;
+    }
+
+    if (!semesterOutOfRange && !isOutlier) return null;
+    if (semesterOutOfRange && isOutlier)
+      return 'The date you selected (' + submittedFmt + ') is both outside your semester (' + semFmt + ') AND more than 3 weeks away from your other deadlines. Add it anyway?';
+    if (semesterOutOfRange)
+      return 'The date you selected (' + submittedFmt + ') falls outside your semester (' + semFmt + '). Add it anyway?';
+    return 'The date you selected (' + submittedFmt + ') is more than 3 weeks away from your other deadlines. Add it anyway?';
+  }
+
   /* ── Form modal state ── */
   var _formItem = null;
 
-  function openAddModal(id, title, due, type, flag) {
+  function openAddModal(id, title, due, type, flag, userEdited) {
     _formItem = {id: id};
 
     document.getElementById('na-input-title').value = title || '';
@@ -490,6 +551,8 @@
     var submitBtn = document.getElementById('na-form-submit');
     submitBtn.textContent = flag === 'outside_semester_window' ? 'Confirm date' : 'Add to calendar';
     submitBtn.disabled = false;
+
+    document.getElementById('na-btn-reset').style.display = userEdited ? '' : 'none';
 
     var backdrop = document.getElementById('na-modal-backdrop');
     backdrop.classList.add('open');
@@ -543,6 +606,11 @@
       errEl.style.display = '';
       return;
     }
+
+    var _warning = checkDateAnomaly(newDue, _resolvedDates,
+                                    _semConfig.semester_start, _semConfig.semester_end);
+    if (_warning && !confirm(_warning)) return;
+
     edits.due_date_resolved = newDue;
 
     var newType = document.getElementById('na-input-type').value.trim();
@@ -590,6 +658,17 @@
     if (e.key === 'Escape') closeAddModal();
   });
 
+  /* ── Reset to original ── */
+  document.getElementById('na-btn-reset').addEventListener('click', function() {
+    if (!_formItem) return;
+    if (!confirm("Reset this item\u2019s edits and remove from your calendar? It will return to its original AI-extracted state.")) return;
+    var id = _formItem.id;
+    fetch('/api/overrides/' + id, {method: 'DELETE'})
+    .then(function(r) { return r.json(); })
+    .then(function() { window.location.reload(); })
+    .catch(function() { alert('Reset failed: network error'); });
+  });
+
   /* ── Wire add-to-cal and dismiss buttons (delegated after DOM ready) ── */
   document.addEventListener('DOMContentLoaded', function() {
     document.querySelectorAll('.add-to-cal-btn').forEach(function(btn) {
@@ -599,7 +678,8 @@
           this.dataset.title,
           this.dataset.due,
           this.dataset.type,
-          this.dataset.flag
+          this.dataset.flag,
+          this.dataset.userEdited === 'true'
         );
       });
     });
@@ -607,7 +687,7 @@
     document.querySelectorAll('.dismiss-btn').forEach(function(btn) {
       btn.addEventListener('click', function() {
         var id = this.dataset.id;
-        if (!confirm('Dismiss this item from the calendar? You can recover it later from a dismissed view.')) return;
+        if (!confirm('Dismissing this item will remove it from your calendar. It will be moved to the dismissed section of Items Needing Review and can be recovered later. Continue?')) return;
         fetch('/api/overrides/' + id, {
           method: 'PUT',
           headers: {'Content-Type': 'application/json'},

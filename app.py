@@ -162,6 +162,8 @@ async def calendar_page(request: Request):
         }
         for c in data.get("courses", [])
     ]
+    sem = _load_semester_config()
+    default = sem.get("default", {})
     return templates.TemplateResponse(
         request,
         "calendar.html",
@@ -170,6 +172,8 @@ async def calendar_page(request: Request):
             "needs_attention_count": data.get("needs_attention_count", 0),
             "generated_at": data.get("generated_at", ""),
             "active_page": "calendar",
+            "semester_start": default.get("semester_start", ""),
+            "semester_end": default.get("semester_end", ""),
         },
     )
 
@@ -199,6 +203,13 @@ async def needs_attention_page(request: Request):
         {**item, "course_color": color_map.get(item.get("course_id", ""), "#6b7a8d")}
         for item in data.get("dismissed", [])
     ]
+    sem = _load_semester_config()
+    default = sem.get("default", {})
+    resolved_dates = [
+        item["due_date_resolved"]
+        for item in data.get("resolved", [])
+        if item.get("due_date_resolved")
+    ]
     return templates.TemplateResponse(
         request,
         "needs_attention.html",
@@ -208,6 +219,9 @@ async def needs_attention_page(request: Request):
             "total_count": len(items),
             "dismissed_items": dismissed,
             "active_page": "calendar",
+            "semester_start": default.get("semester_start", ""),
+            "semester_end": default.get("semester_end", ""),
+            "resolved_dates": resolved_dates,
         },
     )
 
