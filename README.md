@@ -341,11 +341,161 @@ when work begins.)
 (See description in the Phase 6.5 Notification system section above. Full
 subsection to be expanded when work begins.)
 
+### Phase 6.5f: LLM-based query routing
+
+Replace the keyword-based course matcher (`detect_courses` in query.py)
+with a Haiku-based router. The matcher has a known bug where stopwords
+("in", "of", "and") cause false-positive matches on courses with
+prepositions in their names. More fundamentally, deterministic keyword
+matching is the wrong tool for natural-language routing — the LLM does
+this job better, more robustly, and handles edge cases the matcher
+cannot.
+
+**Scope:**
+- New `route_question_to_courses` function in query.py that takes the
+  user's question and the course map, calls Haiku 4.5 with a routing
+  system prompt, and returns a list of course_ids to include in context.
+- Routing prompt instructs Haiku to: identify named courses or course
+  topics in the question; identify general/cross-course questions
+  ("what's due", "my schedule") and return all course_ids; never return
+  empty (fall back to all courses on ambiguity).
+- Output format: JSON list of course_ids. Wrap in try/except — if Haiku
+  fails or returns malformed output, fall back to "return all course
+  IDs." Never block the main query on the router.
+- Latency target: sub-500ms. Routing call sends only course names and
+  question (~200 tokens input).
+- Cost target: ~$0.002 per query (Haiku at $1/$5 per million tokens).
+- Delete or archive the `detect_courses` keyword logic, including
+  `_CROSS_COURSE_PHRASES`. Keep `fuzzy_match_titles` for now — it's used
+  by `build_context` to pull full document text, which is a different
+  job.
+- The context bar in the chat UI continues to display whatever the
+  router returned.
+
+**Why this matters:**
+- Fixes the stopword false-positive bug immediately
+- Establishes the two-stage architecture (cheap router → expensive
+  generator) that the rest of the product will build on
+- Sets up the pattern for Phase 7.5 (embeddings retrieval) and beyond
+- Haiku at $1/$5 per million tokens makes this effectively free at
+  Stage 1-2 scale
+
+**Prerequisite:** None. This can ship before document upload (Phase 7).
+
 ### Phase 7: Study tools
 - Study guides generated from course materials
 - Practice tests with AI-generated questions
 - Document upload (drag-and-drop files into chat for analysis)
 - Document export (download AI responses as Word docs)
+
+### Phase 7.5: Embeddings-based retrieval (RAG)
+
+The current architecture sends pre-processed course summaries for the
+selected courses in full on every query. This works at ~30-40K tokens
+per query (single semester, 5-6 courses) but becomes economically
+unworkable as users accumulate semesters.
+
+**The scaling problem:**
+
+A user's content footprint grows linearly with semesters:
+- Semester 1: ~35K tokens
+- Year 2: ~70K tokens
+- Year 4 (graduating senior): ~280K tokens
+
+At Sonnet 4.6 pricing ($3 per million input tokens), sending the full
+corpus on every query costs:
+- Semester 1 user: ~$0.10 per query
+- Graduating senior: ~$0.84 per query
+
+At 30 queries/day, a graduating senior would cost $25/month in API
+fees. This is incompatible with a $5-8/month subscription. The
+architecture must change before users reach their second semester at
+scale.
+
+**The solution:**
+
+Migrate from "send everything for selected courses" to
+"retrieve top-K most relevant chunks across the user's entire history."
+This is the standard RAG (Retrieval-Augmented Generation) pattern.
+
+**Architecture:**
+
+- All course content (and uploaded documents, see below) is chunked
+  into ~500-1000 token segments
+- Each chunk is embedded into a vector using an embedding model
+  (Voyage AI's voyage-3 or OpenAI's text-embedding-3-large)
+- Vectors are stored in a vector database (pgvector for Postgres
+  integration in Phase 10, or Pinecone/Weaviate as managed services)
+- At query time: embed the question (~$0.00001, <50ms), search the
+  user's vectors for top 20-30 semantically similar chunks, send only
+  those chunks to Sonnet
+- Cost per query stays roughly flat (~$0.05-0.10) regardless of
+  corpus size
+
+**Hybrid retrieval (recommended approach):**
+
+Pure semantic search misses some queries that humans handle naturally.
+Production systems combine multiple retrieval signals:
+- **Semantic similarity** (embeddings): "depreciation methods" matches
+  content about amortization even without keyword overlap
+- **Keyword/BM25 search**: catches exact-match cases where semantic
+  search drifts
+- **Metadata filtering**: course_id, semester, content_type, document_type
+  used to constrain results when the router gives strong signals
+- **Recency boost**: current semester chunks rank higher than past
+  semesters unless past semesters are explicitly invoked
+
+**Multi-semester UX:**
+
+- Current semester is always included in the "hot" context regardless
+  of retrieval scores. Most queries are about now.
+- Past semesters are retrieved when relevant. Phrases like "when I took
+  Accounting 1" or "from freshman year" are signals the Haiku router
+  (Phase 6.5f) can extract and pass to the retrieval layer as filters.
+- Past-semester content is archived but never deleted. "We kept
+  everything from your past courses" is a real product differentiator
+  no competitor has.
+
+**Build sequence:**
+
+This phase splits naturally into stages:
+
+1. **Stage A — Document upload retrieval (lands with Phase 7):**
+   Embeddings-based retrieval for uploaded documents only. Course
+   summaries still sent in full for selected courses. Lower-risk
+   introduction to the embedding pipeline because uploaded docs are
+   session-scoped.
+
+2. **Stage B — Current-semester course retrieval:** Migrate course
+   content from "full summaries" to chunked + embedded. Maintains
+   single-semester quality while building the multi-semester
+   infrastructure.
+
+3. **Stage C — Past-semester archival and retrieval:** Past semesters
+   move to cold storage in the vector database. Retrieved on demand
+   when query routing or semantic relevance warrants it.
+
+**Prerequisites:**
+- Phase 6.5f (Haiku routing) provides the metadata signals (which
+  courses, which semesters) that constrain retrieval
+- Phase 7 (document upload) is the natural first consumer of the
+  retrieval layer
+- Phase 10 (Postgres) is where pgvector integration lives if going
+  that route — but managed vector DBs (Pinecone, Weaviate) can be
+  used earlier without waiting for Postgres
+
+**Cost validation:**
+
+Target cost per query at scale: ~$0.05-0.10 regardless of user
+semester count. At 30 queries/day per user, that's $1.50-3.00/month
+per user, leaving healthy margin on a $5-8/month subscription even
+for graduating seniors with 4 years of history.
+
+### Phase 7.6: Memory synthesis
+
+(To be expanded when work begins. Soft dependency on Phase 7.5 —
+memory summaries themselves should be embedded and retrieved rather
+than sent in full as the user accumulates many of them.)
 
 ### Phase 8: AI vision for scanned documents
 - OCR / vision model pass on `image_based` and scanned-PDF items
@@ -438,6 +588,8 @@ Data collection should be scoped per school. When a student authenticates agains
 
 This is the technical implementation of the data network effect moat. Worth designing the data model with this from day one, even if Stage 1 only has one school.
 
+The per-school correction dataset also accumulates over time and benefits from the same retrieval architecture as personal history. As the Fordham cache grows — thousands of corrected deadlines, confirmed weights, dismissed false positives — the volume eventually exceeds what can be embedded in a system prompt. Phase 7.5's retrieval layer applies here too: at query time, pull the top-K most relevant per-school corrections for the current question rather than dumping the entire cache. The data moat compounds across both axes: individual user history and the per-school corrected dataset, and both require the same infrastructure to remain economically viable at scale.
+
 ### Authentication and account creation
 
 Account creation via Microsoft and Google OAuth, not email/password.
@@ -467,6 +619,7 @@ Each feature is incrementally useful — ship Word + PDF first, layer in the res
 - Don't ship to other schools until Fordham works. Multi-school is a distraction until single-school is proven.
 - Don't build the scraper for parallelization or scale before deciding on the sanctioned-API path. Parallelization increases detection risk. Speed gains aren't worth it if the long-term plan is to delete the scraper.
 - Don't treat the scraper as the product. It is data acquisition. The product is everything built on top of it.
+- Don't try to scale the AI chat to multi-semester users with the current "send full course summaries" architecture. By the user's second or third semester this becomes economically unworkable ($25+/month in API fees on a $7 subscription). Phase 7.5 (embeddings-based retrieval) is the architectural answer and must be in place before users start accumulating semesters at scale.
 
 ### The Fordham IT email
 
