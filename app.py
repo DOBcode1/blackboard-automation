@@ -8,6 +8,8 @@ Usage:
 import json
 import os
 import sys
+import time
+from datetime import datetime, timezone
 
 import anthropic
 import uvicorn
@@ -25,6 +27,23 @@ from overrides_helper import (
     set_dismissed,
     set_manual_add,
     clear_override,
+)
+from chat_history_helper import (
+    load_history,
+    save_history,
+    create_thread,
+    get_thread,
+    list_threads,
+    append_message,
+    soft_delete_thread,
+    restore_thread,
+    rename_thread,
+    purge_old_deleted,
+    purge_thread,
+    clear_all_threads,
+    get_settings,
+    set_memory_enabled,
+    auto_title_from_message,
 )
 
 from query import (
@@ -108,6 +127,9 @@ _course_summaries: dict[str, str] = {}
 _client: anthropic.Anthropic | None = None
 _json_path: str = ""
 _deadlines_data: dict | None = None
+
+# In-memory incognito threads — never written to disk
+_incognito_threads: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -446,15 +468,154 @@ async def delete_override(deadline_id: str):
     return JSONResponse(result)
 
 
+# ---------------------------------------------------------------------------
+# Thread endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/settings")
+async def api_get_settings():
+    return JSONResponse(get_settings())
+
+
+@app.put("/api/settings")
+async def api_put_settings(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "malformed JSON body"}, status_code=400)
+    if "memory_enabled" in body:
+        set_memory_enabled(bool(body["memory_enabled"]))
+    return JSONResponse(get_settings())
+
+
+@app.get("/api/threads")
+async def api_list_threads():
+    return JSONResponse(list_threads(include_deleted=False))
+
+
+@app.get("/api/threads/deleted")
+async def api_list_deleted_threads():
+    data = load_history()
+    deleted = [t for t in data["threads"] if t.get("deleted_at") is not None]
+    return JSONResponse(sorted(deleted, key=lambda t: t.get("deleted_at", ""), reverse=True))
+
+
+@app.post("/api/threads")
+async def api_create_thread(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    incognito = bool(body.get("incognito", False))
+    title = body.get("title") or None
+
+    if incognito:
+        tid = f"thread_{int(time.time() * 1000)}"
+        now = datetime.now(timezone.utc).isoformat()
+        thread = {
+            "id": tid,
+            "title": title or "Incognito chat",
+            "created_at": now,
+            "updated_at": now,
+            "incognito": True,
+            "deleted_at": None,
+            "messages": [],
+            "documents": [],
+        }
+        _incognito_threads[tid] = thread
+        return JSONResponse(thread)
+
+    tid = create_thread(title=title, incognito=False)
+    return JSONResponse(get_thread(tid))
+
+
+@app.get("/api/threads/{thread_id}")
+async def api_get_thread(thread_id: str):
+    if thread_id in _incognito_threads:
+        return JSONResponse(_incognito_threads[thread_id])
+    thread = get_thread(thread_id)
+    if thread is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(thread)
+
+
+@app.put("/api/threads/{thread_id}")
+async def api_rename_thread(thread_id: str, request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "malformed JSON body"}, status_code=400)
+    title = body.get("title", "").strip()
+    if not title:
+        return JSONResponse({"error": "'title' is required"}, status_code=400)
+    if thread_id in _incognito_threads:
+        _incognito_threads[thread_id]["title"] = title[:50]
+        return JSONResponse({"thread_id": thread_id, "title": title[:50]})
+    rename_thread(thread_id, title)
+    return JSONResponse({"thread_id": thread_id, "title": title[:50]})
+
+
+@app.delete("/api/threads/{thread_id}")
+async def api_delete_thread(thread_id: str, permanent: bool = False):
+    if thread_id in _incognito_threads:
+        del _incognito_threads[thread_id]
+        return JSONResponse({"thread_id": thread_id, "deleted": True})
+    if permanent:
+        ok = purge_thread(thread_id)
+        if not ok:
+            return JSONResponse({"error": "thread not found"}, status_code=404)
+        return JSONResponse({"thread_id": thread_id, "permanently_deleted": True})
+    soft_delete_thread(thread_id)
+    return JSONResponse({"thread_id": thread_id, "deleted": True})
+
+
+@app.post("/api/threads/{thread_id}/restore")
+async def api_restore_thread(thread_id: str):
+    restore_thread(thread_id)
+    thread = get_thread(thread_id)
+    if thread is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(thread)
+
+
+@app.delete("/api/threads")
+async def api_clear_all_threads():
+    count = clear_all_threads()
+    return JSONResponse({"cleared": count})
+
+
+# ---------------------------------------------------------------------------
+# Incognito turn helper
+# ---------------------------------------------------------------------------
+
+def _save_incognito_turn(thread_id: str, user_msg: str, assistant_msg: str) -> None:
+    """Update in-memory incognito thread with a completed turn."""
+    thread = _incognito_threads.get(thread_id)
+    if thread is None:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    if not thread["messages"] and thread["title"] == "Incognito chat":
+        thread["title"] = auto_title_from_message(user_msg)
+    thread["messages"].append({"role": "user", "content": user_msg, "timestamp": now})
+    thread["messages"].append({"role": "assistant", "content": assistant_msg, "timestamp": now})
+    thread["updated_at"] = now
+
+
+# ---------------------------------------------------------------------------
+# Chat
+# ---------------------------------------------------------------------------
+
 class ChatRequest(BaseModel):
     message: str
     history: list[dict] = []
+    thread_id: str | None = None
 
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
     question = req.message
-    api_history = req.history  # [{role, content}, ...]
+    api_history = req.history
+    req_thread_id = req.thread_id
 
     matched_ids = detect_courses(question, _course_map, _full_texts)
 
@@ -476,23 +637,48 @@ async def chat(req: ChatRequest):
     )
 
     user_content = f"[Course Content]\n{context}\n\n[Question]\n{question}"
-
     messages = list(api_history) + [{"role": "user", "content": user_content}]
 
+    # Resolve thread — backward compat: auto-create if none provided
+    thread_id = req_thread_id
+    is_incognito = thread_id in _incognito_threads if thread_id else False
+    if thread_id is None:
+        thread_id = create_thread()
+        is_incognito = False
+
     def event_stream():
-        # First SSE event: context metadata
-        meta = json.dumps({"context_label": context_label, "course_ids": matched_ids})
+        full_parts: list[str] = []
+
+        # First SSE event: context metadata + thread_id
+        meta = json.dumps({
+            "context_label": context_label,
+            "course_ids": matched_ids,
+            "thread_id": thread_id,
+        })
         yield f"data: {meta}\n\n"
 
-        with _client.messages.stream(
-            model=MODEL,
-            max_tokens=4096,
-            system=SYSTEM_PROMPT,
-            messages=messages,
-        ) as stream:
-            for text in stream.text_stream:
-                payload = json.dumps({"text": text})
-                yield f"data: {payload}\n\n"
+        try:
+            with _client.messages.stream(
+                model=MODEL,
+                max_tokens=4096,
+                system=SYSTEM_PROMPT,
+                messages=messages,
+            ) as stream:
+                for text in stream.text_stream:
+                    full_parts.append(text)
+                    payload = json.dumps({"text": text})
+                    yield f"data: {payload}\n\n"
+
+            # Persist after successful stream
+            full_response = "".join(full_parts)
+            if is_incognito:
+                _save_incognito_turn(thread_id, question, full_response)
+            else:
+                append_message(thread_id, "user", question)
+                append_message(thread_id, "assistant", full_response)
+
+        except Exception as exc:
+            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
 
         yield 'data: {"done": true}\n\n'
 
@@ -543,6 +729,10 @@ def startup(json_path: str) -> None:
             print(f"Warning: could not load {_DEADLINES_PATH} ({exc}) — overrides will not apply to chat.")
     else:
         print(f"Note: {_DEADLINES_PATH} not found — overrides will not apply to chat.")
+
+    purged = purge_old_deleted(days=30)
+    if purged:
+        print(f"Purged {purged} chat thread(s) deleted >30 days ago.")
 
     print("Ready.\n")
 
