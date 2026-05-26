@@ -390,6 +390,90 @@ subsection to be expanded when work begins.)
 
 ---
 
+## Future plans
+
+This section captures product strategy and business direction beyond the technical roadmap above. Where the "Full roadmap" lists what to build, this section addresses why, who pays, and how the product becomes defensible.
+
+### Product positioning
+
+The product is NOT an AI study tool, an AI chatbot, or a calendar app. Positioning it that way puts it in a saturated market with no edge. The product is "the thing that removes the cognitive load of being a student" — peace of mind during a semester. The AI is invisible plumbing. Every piece of marketing, every pitch, every feature decision should reinforce this framing.
+
+The differentiator is that the product is personalized to a student's actual enrolled courses without the student manually uploading anything. ChatGPT, Quizlet, Chegg, Notion AI — none of them connect to Blackboard. None of them know what's in this semester's courses. That gap is the wedge.
+
+### What people actually pay for
+
+The right question is not "why would a student pay for information they already have access to?" The right question is "what painful task does this product remove from a student's week?" Identified painful tasks the product addresses:
+
+- "What's due this week and how should I prioritize?" — currently solved by mental load and out-of-date spreadsheets
+- "I have an exam in 6 days, what do I study?" — currently solved by 3 hours of scrolling through PDFs and a syllabus
+- "I missed class last week, how do I catch up?" — currently solved by texting friends and office hours
+- "I'm in 5 classes and have no idea which deadlines are coming" — solved by the existing calendar
+- "I'm bad at studying and want a study plan" — currently solved by writing one Sunday and abandoning it Tuesday
+
+These are the features that drive subscription willingness, not the AI itself.
+
+### Moats and defensibility
+
+The scraper is not a moat. Anyone competent can replicate it in a weekend. Real defensibility comes from three layers, in priority order:
+
+1. **Distribution.** Word-of-mouth + visible-on-campus presence at Fordham. Once 40% of students at one school use it, no competitor can dislodge through technology alone.
+2. **Per-school data network effects.** Every user who edits a deadline, dismisses an item, or confirms an AI extraction teaches the system. Across thousands of users at one school, the corrected ground-truth dataset for every course becomes a moat that compounds. New users get a vastly better day-one experience. A competitor showing up two years later starts with zero of that data.
+3. **Workflow lock-in.** Google Calendar sync, SMS notifications, study guides built from a student's own materials, daily digests — the deeper the integration into a study routine, the higher the switching cost.
+
+The scraper is plumbing. The product layer (calendar, chat, notifications, study tools, document generation) is what users actually pay for.
+
+### Business model — staged plan
+
+**Stage 1 — Free Fordham beta (months 0–6).** Goal: 200 weekly active Fordham users. Free, no payment. Validation over revenue. Two parallel build priorities: features that drive daily use (calendar, SMS, weekly digest, AI chat, document upload), and features that drive viral growth (one-tap share, social proof, referral mechanics). Distribution is the slow part — start building it before there is anything to distribute.
+
+**Stage 2 — Monetize Fordham (months 6–12).** Subscription at $5–8/month with a generous free tier. Free tier: calendar, basic chat, weekly digest. Paid tier: SMS notifications, AI study guides, practice tests, document export, Google Calendar sync, unlimited chat. Student-friendly pricing loops: free during summer, $40 annual option, refer-three-friends-get-a-month, free first month of each semester. Target 15% conversion. At 1,000 Fordham users, that is $750/month — not life-changing, but proves unit economics.
+
+**Stage 3 — Sanctioned expansion (year 2).** With 1,000+ Fordham users and real engagement data, the conversation with Fordham IT changes from "asking permission to scrape" to "asking partnership on a tool your students already use." Migrate to Blackboard Learn REST API at this point — sanctioned access, kills ToS risk, replaces the entire scraper layer with cleaner code. In parallel, cold-email peer universities with the Fordham case study.
+
+**Stage 4 — Institutional revenue (year 3+).** B2B2C model. Universities pay $2–3/student/year to provide the tool as a sanctioned campus resource. 50 universities at 10,000 students each = $1–1.5M ARR. Universities have budgets for "student success tools." This path also eliminates the largest legal risk (the gray-zone scraper concern) and changes the investor pitch from "consumer app at universities" to "edtech with institutional revenue."
+
+### Per-school knowledge layer
+
+Data collection should be scoped per school. When a student authenticates against Fordham's Blackboard, the resulting corrections, dismissals, manual edits, and confirmed deadlines pool into a Fordham-specific knowledge cache. Anonymized aggressively — no user-identifying data crosses the cache boundary. A new Fordham user benefits from every prior Fordham user's corrections. A new Boston College user starts a fresh cache.
+
+This is the technical implementation of the data network effect moat. Worth designing the data model with this from day one, even if Stage 1 only has one school.
+
+### Authentication and account creation
+
+Account creation via Microsoft and Google OAuth, not email/password.
+
+- **Microsoft sign-in is the primary path** for most users. Universities (including Fordham) overwhelmingly use Microsoft 365 for student accounts. Sign-in-with-Microsoft means students use their `@fordham.edu` Microsoft account, which gives lowest-friction onboarding, verified institutional affiliation, and sets up OneDrive integration in the same OAuth flow.
+- **Google sign-in is secondary** — used for personal accounts and Google Drive integration.
+
+The school the user belongs to is inferred from their email domain at sign-in time and used to route them to the correct per-school knowledge cache and scraper config.
+
+### Document handling
+
+**Input:** Students drag-and-drop documents, images, screenshots, and PDFs into chat for AI analysis. Use cases: handwritten notes from a missed class, a homework PDF, a syllabus from a course not in Blackboard, a photo of a whiteboard. This is high perceived value, low build cost — should be prioritized earlier in the roadmap than its current Phase 7 placement.
+
+**Output:** Chat responses can be exported as downloadable files. Priority order:
+
+1. Word (.docx) and PDF — covers most study guide and summary use cases
+2. Excel (.xlsx) — for assignment trackers, study schedules, grade calculators
+3. Cloud sync — push directly to the user's OneDrive (if Microsoft sign-in) or Google Drive (if Google sign-in), one OAuth scope already granted at account creation
+4. PowerPoint (.pptx) — lower priority; students rarely need AI-generated slides
+
+Each feature is incrementally useful — ship Word + PDF first, layer in the rest as demand justifies.
+
+### What NOT to do
+
+- Don't position the product as an AI tool. The category is saturated and the framing puts the product in competition with ChatGPT, which it will lose.
+- Don't try to build all of this at once. Stage 1 means picking the 3 features that matter most for a free Fordham beta and ruthlessly deferring everything else. Suggested Stage 1 priority: Microsoft auth → document upload → document export. Everything else waits.
+- Don't ship to other schools until Fordham works. Multi-school is a distraction until single-school is proven.
+- Don't build the scraper for parallelization or scale before deciding on the sanctioned-API path. Parallelization increases detection risk. Speed gains aren't worth it if the long-term plan is to delete the scraper.
+- Don't treat the scraper as the product. It is data acquisition. The product is everything built on top of it.
+
+### The Fordham IT email
+
+Send this earlier rather than later, even before there's anything to demo. The conversation timeline at universities is weeks to months. Running that conversation in parallel with development costs nothing and unlocks the Stage 3 path. Initial framing: a student-built study tool seeking sanctioned access via the Blackboard Learn REST API, with a clear story about good-faith development on the student's own account and a desire to do this the right way as the tool grows.
+
+---
+
 ## Important constraints
 
 - GitHub repo is **PRIVATE** — keep it that way
