@@ -52,7 +52,7 @@ from query import (
     build_context,
     build_course_indexes,
     build_course_map,
-    detect_courses,
+    route_question_to_courses,
     load_data,
     load_or_preprocess,
     short_label,
@@ -617,7 +617,7 @@ async def chat(req: ChatRequest):
     api_history = req.history
     req_thread_id = req.thread_id
 
-    matched_ids = detect_courses(question, _course_map, _full_texts)
+    matched_ids = route_question_to_courses(_client, question, _course_map)
 
     if len(matched_ids) == len(_course_map):
         context_label = "all courses"

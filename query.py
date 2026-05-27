@@ -327,50 +327,62 @@ def load_or_preprocess(client: anthropic.Anthropic, data: dict,
 # Course matching
 # ---------------------------------------------------------------------------
 
-def _words(text: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", text.lower())
-
-
 def build_course_map(data: dict) -> dict[str, str]:
     """Maps course_id -> course_name."""
     return {c["course_id"]: c["course_name"] for c in data.get("courses", [])}
 
 
-_CROSS_COURSE_PHRASES = [
-    "all my classes", "all my courses", "all classes", "all courses",
-    "across all", "every class", "every course", "each class", "each course",
-    "my classes", "my courses",
-]
-
-
-def detect_courses(question: str, course_map: dict[str, str],
-                   full_texts: dict[str, dict[str, str]] = None) -> list[str]:
+def route_question_to_courses(
+    client: anthropic.Anthropic,
+    question: str,
+    course_map: dict[str, str],
+) -> list[str]:
     """
-    Return list of course_ids that match the question, or all ids if none match
-    (i.e. treat as cross-course).
+    Use Haiku to determine which course_ids are relevant to the question.
+    Falls back to all course_ids on any failure.
     """
-    q_low = question.lower()
-    if any(phrase in q_low for phrase in _CROSS_COURSE_PHRASES):
-        return list(course_map.keys())
+    all_ids = list(course_map.keys())
+    course_list = "\n".join(f"{cid}: {cname}" for cid, cname in course_map.items())
+    system = (
+        "You are a course router. Given a student's question and a list of courses, "
+        "return a JSON array of course_ids that are relevant to the question.\n"
+        "Rules:\n"
+        "- If the question names a specific course or topic, return only that course's id.\n"
+        "- If the question is general or cross-course (e.g. 'what's due', 'my schedule', "
+        "'what's coming up', 'all my classes', 'my semester', 'what do I have'), return ALL course_ids.\n"
+        "- If ambiguous, prefer returning all course_ids over fewer.\n"
+        "- NEVER return an empty array.\n"
+        "- Output ONLY a valid JSON array of id strings. No prose, no markdown, no code fences."
+    )
+    user_msg = f"Question: {question}\n\nAvailable courses:\n{course_list}"
 
-    q_words = set(_words(question))
-    matched = []
-
-    for cid, cname in course_map.items():
-        name_words = set(_words(cname))
-        # Also generate abbreviation from capitalised words
-        abbrev_words = {w[0] for w in cname.split() if w and w[0].isupper()}
-        if q_words & name_words or q_words & abbrev_words:
-            matched.append(cid)
-
-    if full_texts:
-        for cid in course_map:
-            if cid not in matched:
-                titles = list(full_texts.get(cid, {}).keys())
-                if fuzzy_match_titles(question, titles):
-                    matched.append(cid)
-
-    return matched if matched else list(course_map.keys())
+    try:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=256,
+            system=system,
+            messages=[{"role": "user", "content": user_msg}],
+        )
+        raw_json = response.content[0].text.strip()
+        parsed = json.loads(raw_json)
+        valid = [cid for cid in parsed if cid in course_map]
+        if not valid:
+            print("[router] Parsed list empty after validation — falling back to all courses", file=sys.stderr)
+            return all_ids
+        print(f"[router] Routed to: {valid}", file=sys.stderr)
+        return valid
+    except anthropic.RateLimitError as e:
+        print(f"[router] Haiku failed (RateLimitError) — falling back to all courses", file=sys.stderr)
+        return all_ids
+    except anthropic.APIError as e:
+        print(f"[router] Haiku failed (APIError) — falling back to all courses", file=sys.stderr)
+        return all_ids
+    except json.JSONDecodeError as e:
+        print(f"[router] Haiku failed (JSONDecodeError) — falling back to all courses", file=sys.stderr)
+        return all_ids
+    except Exception as e:
+        print(f"[router] Haiku failed ({type(e).__name__}) — falling back to all courses", file=sys.stderr)
+        return all_ids
 
 
 # ---------------------------------------------------------------------------
@@ -769,7 +781,7 @@ def main() -> None:
             continue
 
         # Detect which course(s) apply
-        matched_ids = detect_courses(raw, course_map, full_texts)
+        matched_ids = route_question_to_courses(client, raw, course_map)
 
         if len(matched_ids) == len(course_map):
             label = "all courses"
