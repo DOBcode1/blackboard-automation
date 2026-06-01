@@ -17,9 +17,17 @@ MODEL_FAST = "claude-haiku-4-5-20251001"   # fast/cheap tier (course router)
 MODEL_MAIN = "claude-sonnet-4-6"            # main tier (query.py)
 
 # ---------------------------------------------------------------------------
-# Module-level client (created once; fails fast if key is absent)
+# Lazy client — created on first use so importing this module never requires
+# ANTHROPIC_API_KEY to be set in the environment.
 # ---------------------------------------------------------------------------
-_client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+_client: anthropic.Anthropic | None = None
+
+
+def _get_client() -> anthropic.Anthropic:
+    global _client
+    if _client is None:
+        _client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    return _client
 
 # ---------------------------------------------------------------------------
 # Result type for non-streaming calls
@@ -81,7 +89,7 @@ def _collect_text(response) -> str:
 def _stream_chunks(model: str, messages: list, system: str | None, max_tokens: int) -> Generator[str, None, None]:
     """Yield text chunks from a streaming messages call; capture usage if available."""
     kwargs = _build_kwargs(model, messages, system, max_tokens)
-    with _with_retry(_client.messages.stream, **kwargs) as stream:
+    with _with_retry(_get_client().messages.stream, **kwargs) as stream:
         for text in stream.text_stream:
             yield text
         # Usage is captured after the stream closes; ignore failures silently
@@ -105,7 +113,7 @@ def call_fast(
     if stream:
         return _stream_chunks(MODEL_FAST, messages, system, max_tokens)
     kwargs = _build_kwargs(MODEL_FAST, messages, system, max_tokens)
-    response = _with_retry(_client.messages.create, **kwargs)
+    response = _with_retry(_get_client().messages.create, **kwargs)
     return LLMResult(text=_collect_text(response), usage=_extract_usage(response))
 
 
@@ -119,7 +127,7 @@ def call_main(
     if stream:
         return _stream_chunks(MODEL_MAIN, messages, system, max_tokens)
     kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens)
-    response = _with_retry(_client.messages.create, **kwargs)
+    response = _with_retry(_get_client().messages.create, **kwargs)
     return LLMResult(text=_collect_text(response), usage=_extract_usage(response))
 
 
@@ -130,7 +138,7 @@ def call_vision(
 ) -> LLMResult:
     """Route to the main (Sonnet) model; messages may contain image content blocks."""
     kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens)
-    response = _with_retry(_client.messages.create, **kwargs)
+    response = _with_retry(_get_client().messages.create, **kwargs)
     return LLMResult(text=_collect_text(response), usage=_extract_usage(response))
 
 
