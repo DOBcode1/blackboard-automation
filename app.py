@@ -57,6 +57,7 @@ from query import (
     load_or_preprocess,
     short_label,
 )
+from llm_adapter import call_main
 
 # ---------------------------------------------------------------------------
 # Calendar — color palette & template setup
@@ -124,7 +125,6 @@ _compact_index: dict[str, str] = {}
 _full_texts: dict[str, dict[str, str]] = {}
 _course_map: dict[str, str] = {}
 _course_summaries: dict[str, str] = {}
-_client: anthropic.Anthropic | None = None
 _json_path: str = ""
 _deadlines_data: dict | None = None
 
@@ -617,7 +617,7 @@ async def chat(req: ChatRequest):
     api_history = req.history
     req_thread_id = req.thread_id
 
-    matched_ids = route_question_to_courses(_client, question, _course_map)
+    matched_ids = route_question_to_courses(question, _course_map)
 
     if len(matched_ids) == len(_course_map):
         context_label = "all courses"
@@ -658,16 +658,10 @@ async def chat(req: ChatRequest):
         yield f"data: {meta}\n\n"
 
         try:
-            with _client.messages.stream(
-                model=MODEL,
-                max_tokens=4096,
-                system=SYSTEM_PROMPT,
-                messages=messages,
-            ) as stream:
-                for text in stream.text_stream:
-                    full_parts.append(text)
-                    payload = json.dumps({"text": text})
-                    yield f"data: {payload}\n\n"
+            for text in call_main(messages=messages, system=SYSTEM_PROMPT, max_tokens=4096, stream=True):
+                full_parts.append(text)
+                payload = json.dumps({"text": text})
+                yield f"data: {payload}\n\n"
 
             # Persist after successful stream
             full_response = "".join(full_parts)
@@ -691,7 +685,7 @@ async def chat(req: ChatRequest):
 
 def startup(json_path: str) -> None:
     global _data, _compact_index, _full_texts, _course_map, _course_summaries
-    global _client, _json_path, _deadlines_data
+    global _json_path, _deadlines_data
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
@@ -712,12 +706,11 @@ def startup(json_path: str) -> None:
         print("No courses found in file.")
         sys.exit(1)
 
-    _client = anthropic.Anthropic(api_key=api_key)
     _semester_config = _load_semester_config()
 
     print(f"Loaded {len(_course_map)} course(s).")
     _course_summaries = load_or_preprocess(
-        _client, _data, _full_texts, _compact_index, json_path, _semester_config
+        _data, _full_texts, _compact_index, json_path, _semester_config
     )
 
     if os.path.exists(_DEADLINES_PATH):

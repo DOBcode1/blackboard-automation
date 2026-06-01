@@ -207,7 +207,7 @@ def _is_key_item(item: dict) -> bool:
     return False
 
 
-def preprocess_courses(client: anthropic.Anthropic, data: dict,
+def preprocess_courses(data: dict,
                        full_texts: dict, compact_index: dict,
                        cache_path: Path,
                        semester_config: dict) -> dict[str, str]:
@@ -299,7 +299,7 @@ def preprocess_courses(client: anthropic.Anthropic, data: dict,
     return course_summaries
 
 
-def load_or_preprocess(client: anthropic.Anthropic, data: dict,
+def load_or_preprocess(data: dict,
                        full_texts: dict, compact_index: dict,
                        json_path: str,
                        semester_config: dict) -> dict[str, str]:
@@ -318,7 +318,7 @@ def load_or_preprocess(client: anthropic.Anthropic, data: dict,
             return summaries
 
     print("Running pre-processing (this may take a moment)…\n")
-    return preprocess_courses(client, data, full_texts, compact_index, cache_path,
+    return preprocess_courses(data, full_texts, compact_index, cache_path,
                               semester_config)
 
 
@@ -332,7 +332,6 @@ def build_course_map(data: dict) -> dict[str, str]:
 
 
 def route_question_to_courses(
-    client: anthropic.Anthropic,
     question: str,
     course_map: dict[str, str],
 ) -> list[str]:
@@ -677,7 +676,7 @@ def build_context(course_ids: list[str], course_map: dict[str, str],
     return body
 
 
-def ask(client: anthropic.Anthropic, history: list[dict],
+def ask(history: list[dict],
         question: str, context: str) -> str:
     """Send question + context, stream response, return full text."""
     user_content = f"[Course Content]\n{context}\n\n[Question]\n{question}"
@@ -737,11 +736,9 @@ def main() -> None:
         print("No courses found in file.")
         sys.exit(1)
 
-    client = anthropic.Anthropic(api_key=api_key)
-
     # Pre-processing pass (cached)
     course_summaries = load_or_preprocess(
-        client, data, full_texts, compact_index, json_path, semester_config
+        data, full_texts, compact_index, json_path, semester_config
     )
 
     history: list[dict] = []
@@ -773,7 +770,7 @@ def main() -> None:
             continue
 
         # Detect which course(s) apply
-        matched_ids = route_question_to_courses(client, raw, course_map)
+        matched_ids = route_question_to_courses(raw, course_map)
 
         if len(matched_ids) == len(course_map):
             label = "all courses"
@@ -789,7 +786,7 @@ def main() -> None:
         )
 
         try:
-            ask(client, history, raw, context)
+            ask(history, raw, context)
         except anthropic.AuthenticationError:
             print("Error: invalid API key. Check your ANTHROPIC_API_KEY.\n")
             break
