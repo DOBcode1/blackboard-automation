@@ -578,7 +578,7 @@ Build the core ingestion pipeline that all subsequent stages consume. This stage
    - `call_fast(messages, system, max_tokens, ...)` — routes to Haiku 4.5
    - `call_main(messages, system, max_tokens, ...)` — routes to Sonnet 4.6
    - `call_vision(messages, system, max_tokens, ...)` — routes to Sonnet 4.6 with image content blocks
-   - `embed(text)` — routes to the chosen embedding model (initially Voyage AI's voyage-3 or OpenAI text-embedding-3-large; the choice is a one-line config swap)
+   - `embed(texts)` — routes to a local, in-process embedding model that runs on our own machine, with no external embedding provider. Anthropic does not offer an embedding model, so running embeddings locally is the cleanest way to honor the stay-on-Claude constraint: the only paid API in the system remains Anthropic. The adapter keeps this swappable — moving to a hosted provider such as Voyage AI later is a one-file change.
 
    All existing direct `anthropic.Anthropic` calls in query.py and app.py are migrated to use the adapter as part of this stage.
 
@@ -681,7 +681,7 @@ Target cost per query at scale: **$0.05-0.10** regardless of user history size.
 
 Breakdown:
 - Haiku routing call: ~$0.002
-- Embedding the query: ~$0.00001
+- Embedding the query: free (local, in-process embedding model — no per-token cost)
 - Retrieving top-K chunks: free (local computation pre-Postgres, indexed query post-Postgres)
 - Sonnet generation call with ~20K tokens of retrieved context: ~$0.06 input + variable output
 
@@ -797,6 +797,7 @@ The system is reviewable by an experienced software engineer who can:
   then, Phase 6.5b's chat sync (markdown rewriting with user overrides applied
   in memory before sending to the LLM) handles user edits correctly across
   any LLM choice.
+- Reassess the embedding backend. Stage A uses a local, in-process embedding model to honor the stay-on-Claude constraint and keep cost at zero. At production scale two pressures may justify switching to a hosted provider such as Voyage AI: (1) retrieval quality on messy content (OCR'd textbook scans, arbitrary user uploads) may benefit from a higher-quality hosted model, and (2) running a local embedding model server-side is more infrastructure to maintain than calling an embedding API. The adapter makes this a one-file change plus a re-embedding pass over stored documents.
 
 **Storage migration:**
 
