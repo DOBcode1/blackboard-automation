@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import anthropic
+from llm_adapter import call_fast, call_main
 
 SYSTEM_PROMPT = (
     "You are an academic assistant. The student has provided their Blackboard course "
@@ -262,24 +263,22 @@ def preprocess_courses(client: anthropic.Anthropic, data: dict,
 
         fallback = "(pre-processing failed for this course — using compact index only)"
         try:
-            response = client.messages.create(
-                model=MODEL,
-                max_tokens=4096,
-                system=prompt,
+            response = call_main(
                 messages=[{"role": "user", "content": user_message}],
+                system=prompt,
+                max_tokens=4096,
             )
-            summary = response.content[0].text
+            summary = response.text
         except anthropic.RateLimitError:
             print("  Rate limited — waiting 60 seconds...", flush=True)
             time.sleep(60)
             try:
-                response = client.messages.create(
-                    model=MODEL,
-                    max_tokens=4096,
-                    system=prompt,
+                response = call_main(
                     messages=[{"role": "user", "content": user_message}],
+                    system=prompt,
+                    max_tokens=4096,
                 )
-                summary = response.content[0].text
+                summary = response.text
             except anthropic.RateLimitError:
                 print(f"  Warning: rate limit retry failed for {cname}. Using fallback.", flush=True)
                 summary = fallback
@@ -357,13 +356,12 @@ def route_question_to_courses(
     user_msg = f"Question: {question}\n\nAvailable courses:\n{course_list}"
 
     try:
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=256,
-            system=system,
+        response = call_fast(
             messages=[{"role": "user", "content": user_msg}],
+            system=system,
+            max_tokens=256,
         )
-        raw_json = response.content[0].text.strip()
+        raw_json = response.text.strip()
         parsed = json.loads(raw_json)
         valid = [cid for cid in parsed if cid in course_map]
         if not valid:
@@ -689,15 +687,9 @@ def ask(client: anthropic.Anthropic, history: list[dict],
     full_response = ""
     print("\nAssistant: ", end="", flush=True)
 
-    with client.messages.stream(
-        model=MODEL,
-        max_tokens=4096,
-        system=SYSTEM_PROMPT,
-        messages=history,
-    ) as stream:
-        for text in stream.text_stream:
-            print(text, end="", flush=True)
-            full_response += text
+    for text in call_main(messages=history, system=SYSTEM_PROMPT, max_tokens=4096, stream=True):
+        print(text, end="", flush=True)
+        full_response += text
 
     print("\n")
     history.append({"role": "assistant", "content": full_response})
