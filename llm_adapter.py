@@ -16,11 +16,15 @@ from typing import Generator
 MODEL_FAST = "claude-haiku-4-5-20251001"   # fast/cheap tier (course router)
 MODEL_MAIN = "claude-sonnet-4-6"            # main tier (query.py)
 
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+EMBEDDING_DIM = 384
+
 # ---------------------------------------------------------------------------
 # Lazy client — created on first use so importing this module never requires
 # ANTHROPIC_API_KEY to be set in the environment.
 # ---------------------------------------------------------------------------
 _client: anthropic.Anthropic | None = None
+_embedding_model = None
 
 
 def _get_client() -> anthropic.Anthropic:
@@ -28,6 +32,14 @@ def _get_client() -> anthropic.Anthropic:
     if _client is None:
         _client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     return _client
+
+
+def _get_embedding_model():
+    global _embedding_model
+    if _embedding_model is None:
+        from fastembed import TextEmbedding
+        _embedding_model = TextEmbedding(model_name=EMBEDDING_MODEL)
+    return _embedding_model
 
 # ---------------------------------------------------------------------------
 # Result type for non-streaming calls
@@ -143,5 +155,11 @@ def call_vision(
 
 
 def embed(texts: list[str]) -> list[list[float]]:
-    """Embedding backend is pending — not yet implemented."""
-    raise NotImplementedError("embed() is not yet implemented; embedding backend is pending")
+    """Return one embedding vector per input string.
+
+    Uses BAAI/bge-small-en-v1.5 via fastembed — runs locally with no external API call.
+    """
+    if not texts:
+        return []
+    model = _get_embedding_model()
+    return [vec.tolist() for vec in model.embed(texts)]
