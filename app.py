@@ -631,8 +631,7 @@ async def chat(req: ChatRequest):
     current_deadlines = _load_deadlines() or _deadlines_data
 
     context = build_context(
-        matched_ids, _course_map, _compact_index,
-        _course_summaries, _full_texts, question,
+        matched_ids, _course_map, _course_summaries, question,
         current_deadlines,
     )
 

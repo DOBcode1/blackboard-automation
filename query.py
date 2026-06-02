@@ -14,6 +14,8 @@ from pathlib import Path
 
 import anthropic
 from llm_adapter import call_fast, call_main
+from retrieval import search as retrieval_search
+import documents_helper
 
 SYSTEM_PROMPT = (
     "You are an academic assistant. The student has provided their Blackboard course "
@@ -98,6 +100,7 @@ def build_preprocess_prompt(semester_start: str, semester_end: str, term_name: s
 
 MODEL = "claude-sonnet-4-6"
 FULL_TEXT_TRIGGER_CHARS = 500  # chars before extracted_text is truncated in compact index
+RETRIEVAL_TOP_K_PER_COURSE = 10
 
 _ASSESSMENT_TYPES = {
     "assignment", "assessment", "test", "exam", "quiz", "discussion",
@@ -637,12 +640,13 @@ def build_overrides_block(deadlines_data: dict, course_map: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def build_context(course_ids: list[str], course_map: dict[str, str],
-                  compact_index: dict[str, str],
                   course_summaries: dict[str, str],
-                  full_texts: dict[str, dict[str, str]],
                   question: str,
                   deadlines_data: dict | None = None) -> str:
     overrides_block = build_overrides_block(deadlines_data or {}, course_map)
+
+    # Build document id -> title lookup once per call
+    doc_id_to_title = {doc["id"]: doc["title"] for doc in documents_helper.list_documents()}
 
     blocks = []
     for cid in course_ids:
@@ -656,17 +660,13 @@ def build_context(course_ids: list[str], course_map: dict[str, str],
                 summary = apply_overrides_to_markdown(cid, summary, deadlines_data)
             parts.append(f"[Pre-processed Course Summary: {cname}]\n{summary}")
 
-        # 2. Compact index
-        index = compact_index.get(cid, f"(no data for {cname})")
-        parts.append(f"[Course Content Index: {cname}]\n{index}")
-
-        # 3. Full document text for any item fuzzy-matched by the question
-        course_full = full_texts.get(cid, {})
-        if course_full:
-            matched_titles = fuzzy_match_titles(question, list(course_full.keys()))
-            for title in matched_titles:
-                doc_text = course_full[title]
-                parts.append(f"[Full Document: {title}]\n{doc_text}")
+        # 2. Relevant retrieved content (replaces compact index + fuzzy full-doc parts)
+        results = retrieval_search(question, course_id=cid, top_k=RETRIEVAL_TOP_K_PER_COURSE)
+        for result in results:
+            if result.get("metadata", {}).get("content_type") == "course_summary":
+                continue
+            doc_title = doc_id_to_title.get(result["document_id"], "document")
+            parts.append(f"[Relevant excerpt from {doc_title}]\n{result['text']}")
 
         blocks.append("\n\n".join(parts))
 
@@ -780,8 +780,7 @@ def main() -> None:
         print(f"  (using context: {label})")
 
         context = build_context(
-            matched_ids, course_map, compact_index,
-            course_summaries, full_texts, raw,
+            matched_ids, course_map, course_summaries, raw,
             deadlines_data,
         )
 
