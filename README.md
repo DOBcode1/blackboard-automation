@@ -525,7 +525,7 @@ Every piece of textual content in the system — regardless of where it came fro
   "topic": "..." | null,               // free-text topic for unaffiliated documents
   "title": "...",                      // user-facing display name
   "original_filename": "..." | null,
-  "content_type": "syllabus" | "lecture_notes" | "assignment" | "exam_prep" | "homework" | "reading" | "image_text" | "other",
+  "content_type": "syllabus" | "lecture_notes" | "assignment" | "exam_prep" | "homework" | "reading" | "image_text" | "course_summary" | "other",
   "extracted_text": "...",             // canonical text content
   "extraction_method": "native_text" | "vision_ocr" | "user_typed" | "ai_generated",
   "extraction_confidence": 1-5,        // 5 = native text, 4 = high-quality OCR, lower for noisy OCR
@@ -536,7 +536,7 @@ Every piece of textual content in the system — regardless of where it came fro
   "embeddings_status": "pending" | "embedded" | "failed",
   "embedding_model": "..." | null,     // which embedding model produced the vectors
   "chunk_count": ...,                  // how many chunks this document was split into
-  "user_provided_metadata": {...},     // optional user tags, notes, etc.
+  "user_provided_metadata": {...},     // optional user tags, notes, etc. Migrated scraped documents store their Blackboard item URL here as source_url — used as the migration's idempotency key and available for linking citations back to Blackboard later.
   "created_at": "ISO 8601 with timezone",
   "updated_at": "ISO 8601 with timezone",
   "deleted_at": "ISO 8601 or null"
@@ -582,7 +582,7 @@ Build the core ingestion pipeline that all subsequent stages consume. This stage
 
    All existing direct `anthropic.Anthropic` calls in query.py and app.py are migrated to use the adapter as part of this stage.
 
-3. `ingestion.py` — The unified ingestion pipeline. Takes a file path or in-memory file object, detects content type, dispatches to the appropriate extractor, normalizes the result into a Document record. Extractors:
+3. `ingestion.py` — The reusable text-ingestion core. Exposes a single `ingest_text(text, metadata)` function that takes already-extracted text plus metadata and runs the full pipeline: `create_document → chunk → add_chunks → embed`. Stage A calls this directly for migrating pre-processed scraped content. Multi-format file extraction is deferred to Stage B, where user uploads require it; those extractors will call the same `ingest_text` core once text is pulled out. Stage B extractors:
    - Native PDF text → pdfplumber or pypdf (existing reader logic)
    - Image-only PDFs → render pages to images, send to vision adapter for OCR
    - Standalone images (PNG/JPG/WebP) → vision adapter
@@ -591,11 +591,11 @@ Build the core ingestion pipeline that all subsequent stages consume. This stage
 
 4. `chunking.py` — Splits Document.extracted_text into ~500-1000 token chunks with ~50 token overlap. Uses a recursive character-based splitter (LangChain's RecursiveCharacterTextSplitter pattern or equivalent custom implementation — no LangChain dependency, just the algorithm).
 
-5. `embeddings.py` — Takes a chunk's text, calls the adapter's `embed()` function, stores the resulting vector on the DocumentChunk record. Handles batching (embed multiple chunks per API call), retries with exponential backoff, and graceful failure (a chunk that fails to embed gets marked `embeddings_status: "failed"` and is excluded from retrieval rather than blocking the whole document).
+5. `embeddings.py` — Takes a chunk's text, calls the adapter's `embed()` function, stores the resulting vector on the DocumentChunk record. Handles batching (embed multiple chunks per API call), retries with exponential backoff, and graceful failure (a chunk that fails to embed keeps a null embedding and is excluded from retrieval by the `with_embedding_only` filter rather than blocking the whole document). The document-level `embeddings_status` carries the aggregate: `"embedded"` if at least one chunk embedded successfully, `"failed"` if none did.
 
 6. `retrieval.py` — Given a query string and filter criteria (user_id, school_id, optionally course_id or content_type), embeds the query, performs cosine similarity search across DocumentChunk vectors, returns the top-K matches. Initially backed by an in-memory vector search using numpy (fine for thousands of chunks); migrates to pgvector in Phase 10.
 
-7. Update `query.py` to use the new retrieval layer. The existing `build_context` function evolves: instead of dumping full course summaries, it calls `retrieval.search(query, user_id, school_id)` and assembles a context block from the returned chunks. Pre-processed course summaries from the existing pipeline become a special class of Document with `source_type: "blackboard_scraped"` and `content_type: "course_summary"`.
+7. Update `query.py` to use the new retrieval layer. The existing `build_context` function adopts a hybrid approach: it retains the USER-CONFIRMED OVERRIDES block and injects each course's pre-processed summary whole (with overrides applied), because the summary is coupled to the user-override system. It replaces the former compact-index dump and fuzzy-matched full-document dump with semantic chunk retrieval (top-K per course, currently `RETRIEVAL_TOP_K_PER_COURSE = 10`), excluding `course_summary` chunks from retrieval to avoid duplicating the whole summary. Pre-processed course summaries are migrated into the store as `course_summary` Documents (with `source_type: "blackboard_scraped"`) and stay available for future retrieval, but are currently injected whole rather than retrieved. Moving summaries fully into retrieval is deferred to Stage D, once the override system is decoupled from the full-summary markdown.
 
 **What does NOT change in Stage A:**
 - The web UI (no new user-facing features yet)
@@ -722,11 +722,15 @@ Every LLM call through the adapter logs its input tokens, output tokens, model, 
 
 This is the foundation for: detecting cost anomalies, validating unit economics, eventually implementing per-user quotas, and answering "is user X profitable?" before they cancel.
 
+**Known gap:** the adapter captures token usage only on non-streaming calls. The main chat call streams, and streaming token usage is currently discarded. Capturing streaming usage is a prerequisite for per-query cost tracking of the chat call.
+
 #### 9c. Error monitoring
 
 Unhandled exceptions are captured and reported. In development this is a local log file. In Phase 10 production, this routes to Sentry, Honeybadger, or equivalent.
 
 Critical paths (chat send, scraper run, reader run, document upload) have explicit try/except around external dependencies (LLM calls, file I/O, network requests) with sensible fallback behavior. The Haiku router's fail-open pattern is the reference standard.
+
+**Known issue:** the adapter's retry-with-backoff does not currently cover streaming calls, because wrapping `messages.stream` does not catch the network error raised when the stream is opened. Streaming retry should be added during robustness work.
 
 #### 9d. Integration tests
 
@@ -961,8 +965,8 @@ This section documents the gaps between the current state of the codebase and th
 
 - The Universal Content Layer (Phase 7) is the next major build. Document upload, OCR backfill, and embeddings retrieval are all components of this single architectural effort.
 - Structured logging, cost tracking, and integration tests (Phase 9) are partially in place but not systematic. Most operations still use `print()` instead of structured logging.
-- The LLM adapter pattern (Architectural Principle 1) is not yet implemented. Current code makes direct calls to the Anthropic SDK in multiple places. Phase 7 Stage A includes this refactor.
-- Multi-tenancy (Architectural Principle 3) is partially implemented — `user_id` and `school_id` fields exist in some records (chat threads) but not others (deadlines, overrides). Phase 7 will normalize this.
+- The LLM adapter pattern (Architectural Principle 1) is implemented. All LLM calls route through `llm_adapter.py` (`call_fast`, `call_main`, `call_vision`, `embed`); `query.py` and `app.py` no longer call the Anthropic SDK directly. Embeddings run locally in-process via fastembed (bge-small-en-v1.5).
+- Multi-tenancy (Architectural Principle 3) is partially implemented — `user_id` and `school_id` fields exist in chat threads and in the document and chunk stores added in Stage A (single-tenant defaults: `local_dev` / `fordham`); deadlines and overrides remain to be normalized.
 - Storage abstraction (Architectural Principle 2) is informal — helpers exist but they are not behind an interface that would allow seamless swap to Postgres. Phase 10 will formalize this.
 
 ### Known weaknesses being addressed
