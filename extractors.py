@@ -3,12 +3,16 @@ Stage B file-text extractor.
 
 Turns raw file bytes into plain text. Supports .txt, .md, .docx, and .pdf.
 Image files (.png, .jpg, .jpeg, .webp) return (None, "needs_vision", 0) —
-OCR/vision handling is added in a later step.
+OCR/vision handling is provided by extract_text_via_vision (see below).
 
-Dependencies: python-docx, PyMuPDF. No project modules are imported.
-No disk writes, no network calls.
+extract_text_from_file: no network calls, no project imports.
+extract_text_via_vision: makes Anthropic API calls via llm_adapter.call_vision
+    and requires ANTHROPIC_API_KEY in the environment.
+
+Dependencies: python-docx, PyMuPDF. No disk writes.
 """
 
+import base64
 import io
 import os
 
@@ -136,3 +140,157 @@ def _handle_pdf(data: bytes, filename: str) -> tuple[str | None, str, int]:
 
 def _handle_image(data: bytes, filename: str) -> tuple[str | None, str, int]:
     return (None, "needs_vision", 0)
+
+
+# ---------------------------------------------------------------------------
+# Vision-based OCR (makes API calls)
+# ---------------------------------------------------------------------------
+
+_VISION_SYSTEM = (
+    "Transcribe all visible text exactly as written. "
+    "Preserve natural reading order. "
+    "Output only the transcribed text with no commentary or description. "
+    "If there is no readable text, output nothing."
+)
+
+_IMAGE_MEDIA_TYPES = {
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+_VISION_IMAGE_EXTS = set(_IMAGE_MEDIA_TYPES)
+_VISION_PDF_EXTS  = {".pdf"}
+
+
+def extract_text_via_vision(
+    data: bytes,
+    filename: str,
+    mime_type: str | None = None,
+    max_pages: int = 25,
+) -> tuple[str | None, str, int]:
+    """Extract text from images and scanned PDFs using the vision model.
+
+    Returns (extracted_text_or_None, "vision_ocr", 4).
+
+    Makes Anthropic API calls via llm_adapter.call_vision; requires
+    ANTHROPIC_API_KEY in the environment.
+
+    Handler selection: file extension (lowercased) takes priority; mime_type
+    is used only as a tiebreaker when the extension is absent or ambiguous.
+
+    Raises ValueError for unsupported types.
+    """
+    from llm_adapter import call_vision  # imported here to keep module importable without API key
+
+    ext = os.path.splitext(filename)[1].lower() if filename else ""
+
+    # Determine which path to take; resolve via extension first, then mime_type.
+    path = _vision_path_for_ext(ext)
+    if path is None and mime_type:
+        path = _vision_path_for_mime(mime_type)
+
+    if path is None:
+        label = ext if ext else (mime_type or "unknown")
+        raise ValueError(
+            f"Unsupported file type for vision extraction: {label!r}. "
+            "Supported types: .png, .jpg, .jpeg, .webp, .pdf."
+        )
+
+    if path == "image":
+        media_type = _IMAGE_MEDIA_TYPES.get(ext) or "image/jpeg"
+        b64 = base64.standard_b64encode(data).decode("ascii")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": media_type,
+                            "data": b64,
+                        },
+                    },
+                    {"type": "text", "text": "Transcribe all text in this image."},
+                ],
+            }
+        ]
+        result = call_vision(messages, system=_VISION_SYSTEM)
+        text = result.text.strip()
+        return (text or None, "vision_ocr", 4)
+
+    # path == "pdf"
+    import fitz  # PyMuPDF
+
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception as exc:
+        raise ValueError(f"Could not open {filename!r} as a PDF: {exc}") from exc
+
+    page_texts: list[str] = []
+    try:
+        total = doc.page_count
+        if total > max_pages:
+            print(
+                f"[extract_text_via_vision] {filename!r} has {total} pages; "
+                f"processing only the first {max_pages}."
+            )
+        for page_num in range(min(total, max_pages)):
+            try:
+                page = doc.load_page(page_num)
+                mat = fitz.Matrix(2, 2)
+                pix = page.get_pixmap(matrix=mat)
+                png_bytes = pix.tobytes("png")
+                b64 = base64.standard_b64encode(png_bytes).decode("ascii")
+                messages = [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": "image/png",
+                                    "data": b64,
+                                },
+                            },
+                            {
+                                "type": "text",
+                                "text": f"Transcribe all text on page {page_num + 1}.",
+                            },
+                        ],
+                    }
+                ]
+                result = call_vision(messages, system=_VISION_SYSTEM)
+                page_text = result.text.strip()
+                if page_text:
+                    page_texts.append(page_text)
+            except Exception as exc:
+                print(
+                    f"[extract_text_via_vision] Warning: skipping page {page_num + 1} "
+                    f"of {filename!r} — {exc}"
+                )
+    finally:
+        doc.close()
+
+    combined = "\n\n".join(page_texts)
+    return (combined or None, "vision_ocr", 4)
+
+
+def _vision_path_for_ext(ext: str) -> str | None:
+    if ext in _VISION_IMAGE_EXTS:
+        return "image"
+    if ext in _VISION_PDF_EXTS:
+        return "pdf"
+    return None
+
+
+def _vision_path_for_mime(mime_type: str) -> str | None:
+    base = mime_type.split(";")[0].strip().lower()
+    if base in {"image/png", "image/jpeg", "image/webp"}:
+        return "image"
+    if base == "application/pdf":
+        return "pdf"
+    return None
