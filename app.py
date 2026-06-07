@@ -9,11 +9,12 @@ import json
 import os
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 
 import anthropic
 import uvicorn
-from fastapi import FastAPI, Form, Request, UploadFile
+from fastapi import BackgroundTasks, FastAPI, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -134,6 +135,9 @@ _deadlines_data: dict | None = None
 
 # In-memory incognito threads — never written to disk
 _incognito_threads: dict[str, dict] = {}
+
+# In-memory upload job status — keyed by job_id
+_upload_jobs: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
 # FastAPI app
@@ -702,9 +706,67 @@ _EXT_TO_MIME = {
 }
 
 
+def _process_upload(job_id: str, data: bytes, safe_name: str, mime_type: str, thread_id: str | None) -> None:
+    """Background worker: extract, ingest, and save an uploaded file."""
+    job = _upload_jobs[job_id]
+
+    # --- Extract text ---
+    try:
+        text, method, confidence = extract_text_from_file(data, safe_name, mime_type)
+    except Exception as exc:
+        job["status"] = "failed"
+        job["error"] = f"Extraction error: {exc}"
+        return
+
+    if method == "needs_vision":
+        try:
+            text, method, confidence = extract_text_via_vision(data, safe_name, mime_type)
+        except Exception as exc:
+            job["status"] = "failed"
+            job["error"] = f"Vision extraction error: {exc}"
+            return
+
+    if not text:
+        job["status"] = "failed"
+        job["error"] = "No readable text could be extracted."
+        return
+
+    # --- Ingest ---
+    title = os.path.splitext(safe_name)[0]
+    doc_id = ingest_text(
+        text,
+        title=title,
+        source_type="user_upload",
+        extraction_method=method,
+        extraction_confidence=confidence,
+        content_type="other",
+        original_filename=safe_name,
+        mime_type=mime_type,
+        file_size_bytes=len(data),
+        thread_id=thread_id,
+    )
+    if doc_id is None:
+        job["status"] = "failed"
+        job["error"] = "No readable text could be extracted."
+        return
+
+    # --- Save original file bytes ---
+    upload_dir = os.path.join("output", "uploads", _UPLOAD_USER_ID, doc_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, safe_name)
+    with open(file_path, "wb") as fh:
+        fh.write(data)
+    update_document(doc_id, original_file_path=file_path)
+
+    print(f"[upload] ingested {safe_name!r} → doc_id={doc_id} method={method}")
+    job["status"] = "ready"
+    job["doc_id"] = doc_id
+
+
 @app.post("/api/documents/upload")
 async def upload_document(
     file: UploadFile,
+    background_tasks: BackgroundTasks,
     thread_id: str | None = Form(default=None),
 ):
     # --- 1. Sanitize filename ---
@@ -730,56 +792,27 @@ async def upload_document(
 
     mime_type = file.content_type or _EXT_TO_MIME.get(ext, "application/octet-stream")
 
-    # --- 3. Extract text ---
-    try:
-        text, method, confidence = extract_text_from_file(data, safe_name, mime_type)
-    except Exception as exc:
-        return JSONResponse({"error": f"Extraction error: {exc}"}, status_code=422)
+    # --- 3. Schedule background processing ---
+    job_id = "job_" + uuid.uuid4().hex
+    _upload_jobs[job_id] = {
+        "id": job_id,
+        "status": "processing",
+        "filename": safe_name,
+        "thread_id": thread_id,
+        "doc_id": None,
+        "error": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    background_tasks.add_task(_process_upload, job_id, data, safe_name, mime_type, thread_id)
+    return JSONResponse({"job_id": job_id, "status": "processing"}, status_code=202)
 
-    if method == "needs_vision":
-        try:
-            text, method, confidence = extract_text_via_vision(data, safe_name, mime_type)
-        except Exception as exc:
-            return JSONResponse({"error": f"Vision extraction error: {exc}"}, status_code=422)
 
-    # --- 4. Guard: no readable text ---
-    if not text:
-        return JSONResponse(
-            {"error": "File was received but no readable text could be extracted."},
-            status_code=422,
-        )
-
-    # --- 5. Ingest ---
-    title = os.path.splitext(safe_name)[0]
-    doc_id = ingest_text(
-        text,
-        title=title,
-        source_type="user_upload",
-        extraction_method=method,
-        extraction_confidence=confidence,
-        content_type="other",
-        original_filename=safe_name,
-        mime_type=mime_type,
-        file_size_bytes=len(data),
-        thread_id=thread_id,
-    )
-    if doc_id is None:
-        return JSONResponse(
-            {"error": "File was received but no readable text could be extracted."},
-            status_code=422,
-        )
-
-    # --- 6. Save original file bytes ---
-    upload_dir = os.path.join("output", "uploads", _UPLOAD_USER_ID, doc_id)
-    os.makedirs(upload_dir, exist_ok=True)
-    file_path = os.path.join(upload_dir, safe_name)
-    with open(file_path, "wb") as fh:
-        fh.write(data)
-    update_document(doc_id, original_file_path=file_path)
-
-    # --- 7. Return full document record ---
-    print(f"[upload] ingested {safe_name!r} → doc_id={doc_id} method={method}")
-    return JSONResponse(get_document(doc_id))
+@app.get("/api/uploads/{job_id}")
+async def get_upload_job(job_id: str):
+    job = _upload_jobs.get(job_id)
+    if job is None:
+        return JSONResponse({"error": "job not found"}, status_code=404)
+    return JSONResponse(job)
 
 
 # ---------------------------------------------------------------------------
