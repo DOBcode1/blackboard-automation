@@ -642,11 +642,26 @@ def build_overrides_block(deadlines_data: dict, course_map: dict) -> str:
 def build_context(course_ids: list[str], course_map: dict[str, str],
                   course_summaries: dict[str, str],
                   question: str,
-                  deadlines_data: dict | None = None) -> str:
+                  deadlines_data: dict | None = None,
+                  attachments: list[str] | None = None) -> str:
     overrides_block = build_overrides_block(deadlines_data or {}, course_map)
 
     # Build document id -> title lookup once per call
     doc_id_to_title = {doc["id"]: doc["title"] for doc in documents_helper.list_documents()}
+
+    # Attached documents — placed at the top so the model treats them as primary
+    attachment_blocks = []
+    for doc_id in (attachments or []):
+        doc = documents_helper.get_document(doc_id)
+        if not doc:
+            continue
+        chunks = documents_helper.get_chunks_for_document(doc_id)
+        if not chunks:
+            continue
+        text = "\n".join(c["text"] for c in chunks)
+        if len(text) > 12000:
+            text = text[:12000] + "\n[... truncated]"
+        attachment_blocks.append(f"[Attached document: {doc['title']}]\n{text}")
 
     blocks = []
     for cid in course_ids:
@@ -671,6 +686,9 @@ def build_context(course_ids: list[str], course_map: dict[str, str],
         blocks.append("\n\n".join(parts))
 
     body = "\n\n---\n\n".join(blocks)
+    attachment_prefix = "\n\n---\n\n".join(attachment_blocks)
+    if attachment_prefix:
+        body = attachment_prefix + ("\n\n---\n\n" + body if body else "")
     if overrides_block:
         return overrides_block + "\n---\n\n" + body
     return body

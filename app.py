@@ -617,6 +617,7 @@ class ChatRequest(BaseModel):
     message: str
     history: list[dict] = []
     thread_id: str | None = None
+    attachments: list[str] = []
 
 
 @app.post("/api/chat")
@@ -641,6 +642,7 @@ async def chat(req: ChatRequest):
     context = build_context(
         matched_ids, _course_map, _course_summaries, question,
         current_deadlines,
+        attachments=req.attachments,
     )
 
     user_content = f"[Course Content]\n{context}\n\n[Question]\n{question}"
