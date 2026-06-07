@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 import anthropic
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -45,6 +45,10 @@ from chat_history_helper import (
     set_memory_enabled,
     auto_title_from_message,
 )
+
+from documents_helper import get_document, update_document
+from extractors import extract_text_from_file, extract_text_via_vision
+from ingestion import ingest_text
 
 from query import (
     MODEL,
@@ -676,6 +680,106 @@ async def chat(req: ChatRequest):
         yield 'data: {"done": true}\n\n'
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Document upload
+# ---------------------------------------------------------------------------
+
+_ALLOWED_EXTENSIONS = {".txt", ".md", ".docx", ".pdf", ".png", ".jpg", ".jpeg", ".webp"}
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20 MB
+_UPLOAD_USER_ID = "local_dev"
+
+_EXT_TO_MIME = {
+    ".txt":  "text/plain",
+    ".md":   "text/markdown",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pdf":  "application/pdf",
+    ".png":  "image/png",
+    ".jpg":  "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
+
+@app.post("/api/documents/upload")
+async def upload_document(
+    file: UploadFile,
+    thread_id: str | None = Form(default=None),
+):
+    # --- 1. Sanitize filename ---
+    raw_name = file.filename or ""
+    safe_name = os.path.basename(raw_name)
+    if not safe_name or ".." in safe_name or "/" in safe_name or "\\" in safe_name:
+        return JSONResponse({"error": "Invalid filename."}, status_code=400)
+
+    ext = os.path.splitext(safe_name)[1].lower()
+    if ext not in _ALLOWED_EXTENSIONS:
+        return JSONResponse(
+            {"error": f"Unsupported file type {ext!r}. Allowed: {', '.join(sorted(_ALLOWED_EXTENSIONS))}."},
+            status_code=400,
+        )
+
+    # --- 2. Read bytes and enforce size limit ---
+    data = await file.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        return JSONResponse(
+            {"error": f"File exceeds the 20 MB limit ({len(data) / 1_048_576:.1f} MB received)."},
+            status_code=400,
+        )
+
+    mime_type = file.content_type or _EXT_TO_MIME.get(ext, "application/octet-stream")
+
+    # --- 3. Extract text ---
+    try:
+        text, method, confidence = extract_text_from_file(data, safe_name, mime_type)
+    except Exception as exc:
+        return JSONResponse({"error": f"Extraction error: {exc}"}, status_code=422)
+
+    if method == "needs_vision":
+        try:
+            text, method, confidence = extract_text_via_vision(data, safe_name, mime_type)
+        except Exception as exc:
+            return JSONResponse({"error": f"Vision extraction error: {exc}"}, status_code=422)
+
+    # --- 4. Guard: no readable text ---
+    if not text:
+        return JSONResponse(
+            {"error": "File was received but no readable text could be extracted."},
+            status_code=422,
+        )
+
+    # --- 5. Ingest ---
+    title = os.path.splitext(safe_name)[0]
+    doc_id = ingest_text(
+        text,
+        title=title,
+        source_type="user_upload",
+        extraction_method=method,
+        extraction_confidence=confidence,
+        content_type="other",
+        original_filename=safe_name,
+        mime_type=mime_type,
+        file_size_bytes=len(data),
+        thread_id=thread_id,
+    )
+    if doc_id is None:
+        return JSONResponse(
+            {"error": "File was received but no readable text could be extracted."},
+            status_code=422,
+        )
+
+    # --- 6. Save original file bytes ---
+    upload_dir = os.path.join("output", "uploads", _UPLOAD_USER_ID, doc_id)
+    os.makedirs(upload_dir, exist_ok=True)
+    file_path = os.path.join(upload_dir, safe_name)
+    with open(file_path, "wb") as fh:
+        fh.write(data)
+    update_document(doc_id, original_file_path=file_path)
+
+    # --- 7. Return full document record ---
+    print(f"[upload] ingested {safe_name!r} → doc_id={doc_id} method={method}")
+    return JSONResponse(get_document(doc_id))
 
 
 # ---------------------------------------------------------------------------
