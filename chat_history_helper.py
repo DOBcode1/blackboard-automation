@@ -143,11 +143,17 @@ def list_threads(include_deleted: bool = False) -> list:
     return sorted(result, key=lambda t: t.get("updated_at", ""), reverse=True)
 
 
-def append_message(thread_id: str, role: str, content: str) -> None:
+def append_message(
+    thread_id: str,
+    role: str,
+    content: str,
+    attachments: list[dict] | None = None,
+) -> None:
     """
     Append a message to a persistent thread.
     No-op if memory_enabled is False.
     Auto-titles the thread from the first user message.
+    attachments: optional list of {doc_id, name} dicts (user messages only).
     """
     data = load_history()
     if not data.get("settings", {}).get("memory_enabled", True):
@@ -157,7 +163,10 @@ def append_message(thread_id: str, role: str, content: str) -> None:
         if thread["id"] == thread_id:
             if role == "user" and not thread["messages"] and thread["title"] == "New chat":
                 thread["title"] = auto_title_from_message(content)
-            thread["messages"].append({"role": role, "content": content, "timestamp": now})
+            msg: dict = {"role": role, "content": content, "timestamp": now}
+            if role == "user":
+                msg["attachments"] = attachments if attachments is not None else []
+            thread["messages"].append(msg)
             thread["updated_at"] = now
             save_history(data)
             return

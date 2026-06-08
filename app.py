@@ -596,7 +596,12 @@ async def api_clear_all_threads():
 # Incognito turn helper
 # ---------------------------------------------------------------------------
 
-def _save_incognito_turn(thread_id: str, user_msg: str, assistant_msg: str) -> None:
+def _save_incognito_turn(
+    thread_id: str,
+    user_msg: str,
+    assistant_msg: str,
+    attachments: list[dict] | None = None,
+) -> None:
     """Update in-memory incognito thread with a completed turn."""
     thread = _incognito_threads.get(thread_id)
     if thread is None:
@@ -604,7 +609,12 @@ def _save_incognito_turn(thread_id: str, user_msg: str, assistant_msg: str) -> N
     now = datetime.now(timezone.utc).isoformat()
     if not thread["messages"] and thread["title"] == "Incognito chat":
         thread["title"] = auto_title_from_message(user_msg)
-    thread["messages"].append({"role": "user", "content": user_msg, "timestamp": now})
+    thread["messages"].append({
+        "role": "user",
+        "content": user_msg,
+        "timestamp": now,
+        "attachments": attachments if attachments is not None else [],
+    })
     thread["messages"].append({"role": "assistant", "content": assistant_msg, "timestamp": now})
     thread["updated_at"] = now
 
@@ -635,6 +645,40 @@ async def chat(req: ChatRequest):
             short_label(_course_map[cid]) for cid in matched_ids
         )
 
+    # Resolve thread — backward compat: auto-create if none provided
+    thread_id = req_thread_id
+    is_incognito = thread_id in _incognito_threads if thread_id else False
+    if thread_id is None:
+        thread_id = create_thread()
+        is_incognito = False
+
+    # --- Collect all attachment doc_ids across the conversation ---
+    # Gather from prior user messages stored in this thread, then union with
+    # the current request's attachments, so follow-up questions still see them.
+    prior_doc_ids: list[str] = []
+    if is_incognito:
+        thread_msgs = _incognito_threads[thread_id].get("messages", [])
+    else:
+        stored_thread = get_thread(thread_id)
+        thread_msgs = stored_thread["messages"] if stored_thread else []
+    for msg in thread_msgs:
+        if msg.get("role") == "user":
+            for att in msg.get("attachments") or []:
+                did = att.get("doc_id")
+                if did and did not in prior_doc_ids:
+                    prior_doc_ids.append(did)
+    combined_doc_ids: list[str] = list(prior_doc_ids)
+    for did in req.attachments:
+        if did not in combined_doc_ids:
+            combined_doc_ids.append(did)
+
+    # Build attachment metadata list for storing on the user message record.
+    attachment_meta: list[dict] = []
+    for did in req.attachments:
+        doc = get_document(did)
+        name = doc.get("original_filename") or did if doc else did
+        attachment_meta.append({"doc_id": did, "name": name})
+
     # Reload deadlines fresh on each request so edits applied while the app
     # is running are reflected immediately without a restart.
     current_deadlines = _load_deadlines() or _deadlines_data
@@ -642,18 +686,11 @@ async def chat(req: ChatRequest):
     context = build_context(
         matched_ids, _course_map, _course_summaries, question,
         current_deadlines,
-        attachments=req.attachments,
+        attachments=combined_doc_ids,
     )
 
     user_content = f"[Course Content]\n{context}\n\n[Question]\n{question}"
     messages = list(api_history) + [{"role": "user", "content": user_content}]
-
-    # Resolve thread — backward compat: auto-create if none provided
-    thread_id = req_thread_id
-    is_incognito = thread_id in _incognito_threads if thread_id else False
-    if thread_id is None:
-        thread_id = create_thread()
-        is_incognito = False
 
     def event_stream():
         full_parts: list[str] = []
@@ -675,9 +712,9 @@ async def chat(req: ChatRequest):
             # Persist after successful stream
             full_response = "".join(full_parts)
             if is_incognito:
-                _save_incognito_turn(thread_id, question, full_response)
+                _save_incognito_turn(thread_id, question, full_response, attachments=attachment_meta)
             else:
-                append_message(thread_id, "user", question)
+                append_message(thread_id, "user", question, attachments=attachment_meta)
                 append_message(thread_id, "assistant", full_response)
 
         except Exception as exc:
