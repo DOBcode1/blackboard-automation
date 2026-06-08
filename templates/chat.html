@@ -426,6 +426,15 @@
   }
   .attach-chip .chip-remove:hover { color: var(--text); }
 
+  /* ── In-bubble attachment chips ── */
+  .bubble-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 6px;
+  }
+  .bubble-chip { padding: 3px 10px; }
+
   /* ── Settings modal ── */
   .modal-overlay {
     position: fixed;
@@ -830,7 +839,7 @@ function renderMessages(messages) {
   const container = document.getElementById('messages');
   container.innerHTML = '';
   messages.forEach(m => {
-    addMessage(m.role, m.role === 'user' ? renderMarkdown(m.content) : renderMarkdown(m.content));
+    addMessage(m.role, renderMarkdown(m.content), false, m.attachments || []);
   });
   container.scrollTop = container.scrollHeight;
 }
@@ -1140,7 +1149,7 @@ function renderMarkdown(text) {
 }
 
 // ── Chat ───────────────────────────────────────────────────────────────────
-function addMessage(role, htmlContent, isTyping = false) {
+function addMessage(role, htmlContent, isTyping = false, attachments = []) {
   const msgs = document.getElementById('messages');
   const wrapper = document.createElement('div');
   wrapper.className = `message ${role}`;
@@ -1156,7 +1165,24 @@ function addMessage(role, htmlContent, isTyping = false) {
       <div class="dot"></div><div class="dot"></div><div class="dot"></div>
     </div>`;
   } else {
-    bubble.innerHTML = htmlContent;
+    if (role === 'user' && attachments && attachments.length > 0) {
+      const chipsRow = document.createElement('div');
+      chipsRow.className = 'bubble-chips';
+      attachments.forEach(a => {
+        const chip = document.createElement('div');
+        chip.className = 'attach-chip bubble-chip';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'chip-name';
+        nameSpan.title = a.name;
+        nameSpan.textContent = a.name;
+        chip.appendChild(nameSpan);
+        chipsRow.appendChild(chip);
+      });
+      bubble.appendChild(chipsRow);
+    }
+    const contentDiv = document.createElement('div');
+    contentDiv.innerHTML = htmlContent;
+    bubble.appendChild(contentDiv);
   }
 
   wrapper.appendChild(avatar);
@@ -1177,7 +1203,14 @@ async function sendMessage() {
   input.style.height = 'auto';
   input.rows = 1;
 
-  addMessage('user', renderMarkdown(text));
+  // Capture BEFORE clearing: objects {doc_id, name} for the bubble; plain strings for the request.
+  const readyAttachments = pendingAttachments
+    .filter(e => e.status === 'ready' && e.docId)
+    .map(e => ({ doc_id: e.docId, name: e.name }));
+  const readyDocIds = readyAttachments.map(a => a.doc_id);
+
+  addMessage('user', renderMarkdown(text), false, readyAttachments);
+  clearAttachments();
   const aiBubble = addMessage('assistant', '', true);
 
   isStreaming = true;
@@ -1188,10 +1221,6 @@ async function sendMessage() {
   let resolvedThreadId = activeThreadId;
 
   try {
-    const readyDocIds = pendingAttachments
-      .filter(e => e.status === 'ready' && e.docId)
-      .map(e => e.docId);
-
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
