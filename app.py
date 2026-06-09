@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 import anthropic
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Form, Request, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -866,6 +866,48 @@ async def get_upload_job(job_id: str):
     if job is None:
         return JSONResponse({"error": "job not found"}, status_code=404)
     return JSONResponse(job)
+
+
+_UPLOADS_ROOT = os.path.join("output", "uploads")
+
+
+@app.get("/api/documents/{doc_id}/file")
+async def get_document_file(doc_id: str):
+    doc = get_document(doc_id)
+    if doc is None:
+        return JSONResponse({"error": "document not found"}, status_code=404)
+
+    file_path = doc.get("original_file_path")
+    if not file_path:
+        return JSONResponse({"error": "no file path stored for this document"}, status_code=404)
+
+    # Safety: only serve files inside the uploads directory
+    abs_file = os.path.realpath(file_path)
+    abs_root = os.path.realpath(_UPLOADS_ROOT)
+    if not abs_file.startswith(abs_root + os.sep) and abs_file != abs_root:
+        return JSONResponse({"error": "file path is outside uploads directory"}, status_code=404)
+
+    if not os.path.isfile(abs_file):
+        return JSONResponse({"error": "file not found on disk"}, status_code=404)
+
+    return FileResponse(
+        abs_file,
+        media_type=doc.get("mime_type") or "application/octet-stream",
+        filename=doc.get("original_filename") or os.path.basename(abs_file),
+    )
+
+
+@app.get("/api/documents/{doc_id}")
+async def get_document_meta(doc_id: str):
+    doc = get_document(doc_id)
+    if doc is None:
+        return JSONResponse({"error": "document not found"}, status_code=404)
+    return JSONResponse({
+        "id": doc_id,
+        "original_filename": doc.get("original_filename"),
+        "mime_type": doc.get("mime_type"),
+        "extracted_text": doc.get("extracted_text"),
+    })
 
 
 # ---------------------------------------------------------------------------

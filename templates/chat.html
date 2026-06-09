@@ -435,6 +435,51 @@
   }
   .bubble-chip { padding: 3px 10px; }
 
+  /* Clickable chips */
+  .attach-chip.clickable { cursor: pointer; }
+  .attach-chip.clickable:hover { background: #e2e8f0; border-color: var(--accent); }
+
+  /* ── Preview modal ── */
+  .preview-modal-box {
+    background: #fff;
+    border-radius: 12px;
+    width: 720px;
+    max-width: 94vw;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.25);
+    overflow: hidden;
+  }
+  .preview-modal-body {
+    flex: 1;
+    overflow: auto;
+    padding: 16px 20px 20px;
+    min-height: 0;
+  }
+  .preview-modal-body img {
+    max-width: 100%;
+    max-height: 75vh;
+    display: block;
+    margin: 0 auto;
+    border-radius: 4px;
+  }
+  .preview-modal-body iframe {
+    width: 100%;
+    height: calc(88vh - 120px);
+    border: none;
+    border-radius: 4px;
+  }
+  .preview-modal-body pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    color: var(--text);
+    margin: 0;
+  }
+
   /* ── Settings modal ── */
   .modal-overlay {
     position: fixed;
@@ -670,6 +715,17 @@
   </div>
 </div>
 
+<!-- ── Preview modal ── -->
+<div id="preview-modal" class="modal-overlay" style="display:none" onclick="handlePreviewOverlayClick(event)">
+  <div class="preview-modal-box" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="preview-modal-title" style="max-width:calc(100% - 40px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Document</h3>
+      <button class="modal-close" onclick="closePreview()">&#215;</button>
+    </div>
+    <div class="preview-modal-body" id="preview-modal-body"></div>
+  </div>
+</div>
+
 <script>
 // ── State ──────────────────────────────────────────────────────────────────
 let activeThreadId = null;
@@ -682,6 +738,55 @@ let isStreaming = false;
 let memoryEnabled = true;
 let deletedChatsVisible = false;
 let pendingAttachments = []; // { name, docId, status: 'processing'|'ready'|'failed', chipEl }
+
+// ── Preview modal ──────────────────────────────────────────────────────────
+function openPreview(docId, filename) {
+  const ext = (filename.split('.').pop() || '').toLowerCase();
+  const body = document.getElementById('preview-modal-body');
+  body.innerHTML = '';
+  document.getElementById('preview-modal-title').textContent = filename;
+
+  const fileUrl = '/api/documents/' + docId + '/file';
+
+  if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
+    const img = document.createElement('img');
+    img.src = fileUrl;
+    img.alt = filename;
+    body.appendChild(img);
+  } else if (ext === 'pdf') {
+    const iframe = document.createElement('iframe');
+    iframe.src = fileUrl;
+    iframe.title = filename;
+    body.appendChild(iframe);
+  } else {
+    const loading = document.createElement('p');
+    loading.style.cssText = 'color:var(--text-muted);font-size:13px';
+    loading.textContent = 'Loading\u2026';
+    body.appendChild(loading);
+    fetch('/api/documents/' + docId)
+      .then(r => r.json())
+      .then(data => {
+        body.innerHTML = '';
+        const pre = document.createElement('pre');
+        pre.textContent = data.extracted_text || '(no text content)';
+        body.appendChild(pre);
+      })
+      .catch(() => {
+        body.innerHTML = '<p style="color:#c0392b;font-size:13px">Failed to load document.</p>';
+      });
+  }
+
+  document.getElementById('preview-modal').style.display = 'flex';
+}
+
+function closePreview() {
+  document.getElementById('preview-modal').style.display = 'none';
+  document.getElementById('preview-modal-body').innerHTML = '';
+}
+
+function handlePreviewOverlayClick(e) {
+  if (e.target === document.getElementById('preview-modal')) closePreview();
+}
 
 // ── Attachment helpers ─────────────────────────────────────────────────────
 function clearAttachments() {
@@ -1170,12 +1275,13 @@ function addMessage(role, htmlContent, isTyping = false, attachments = []) {
       chipsRow.className = 'bubble-chips';
       attachments.forEach(a => {
         const chip = document.createElement('div');
-        chip.className = 'attach-chip bubble-chip';
+        chip.className = 'attach-chip bubble-chip' + (a.doc_id ? ' clickable' : '');
         const nameSpan = document.createElement('span');
         nameSpan.className = 'chip-name';
         nameSpan.title = a.name;
         nameSpan.textContent = a.name;
         chip.appendChild(nameSpan);
+        if (a.doc_id) chip.onclick = () => openPreview(a.doc_id, a.name);
         chipsRow.appendChild(chip);
       });
       bubble.appendChild(chipsRow);
@@ -1350,7 +1456,7 @@ async function uploadFile(file) {
   removeBtn.className = 'chip-remove';
   removeBtn.title = 'Remove';
   removeBtn.textContent = '\u00d7';
-  removeBtn.onclick = () => removeAttachment(file.name);
+  removeBtn.onclick = (e) => { e.stopPropagation(); removeAttachment(file.name); };
 
   chip.appendChild(nameSpan);
   chip.appendChild(stateSpan);
@@ -1367,6 +1473,8 @@ async function uploadFile(file) {
     if (!pendingAttachments.includes(entry)) return;
     if (ok) {
       stateSpan.textContent = '';
+      chip.classList.add('clickable');
+      chip.onclick = () => openPreview(entry.docId, entry.name);
     } else {
       entry.status = 'failed';
       chip.classList.add('failed');
