@@ -636,7 +636,16 @@ async def chat(req: ChatRequest):
     api_history = req.history
     req_thread_id = req.thread_id
 
-    matched_ids = route_question_to_courses(question, _course_map)
+    is_attachment_summary = not question.strip() and bool(req.attachments)
+    question_for_model = (
+        "Summarize the attached document(s), share the key insights, and tell me which of my courses this most likely relates to and how it connects."
+        if is_attachment_summary else question
+    )
+
+    if is_attachment_summary:
+        matched_ids = list(_course_map.keys())
+    else:
+        matched_ids = route_question_to_courses(question, _course_map)
 
     if len(matched_ids) == len(_course_map):
         context_label = "all courses"
@@ -661,6 +670,7 @@ async def chat(req: ChatRequest):
     else:
         stored_thread = get_thread(thread_id)
         thread_msgs = stored_thread["messages"] if stored_thread else []
+    is_first_message = not thread_msgs
     for msg in thread_msgs:
         if msg.get("role") == "user":
             for att in msg.get("attachments") or []:
@@ -684,12 +694,12 @@ async def chat(req: ChatRequest):
     current_deadlines = _load_deadlines() or _deadlines_data
 
     context = build_context(
-        matched_ids, _course_map, _course_summaries, question,
+        matched_ids, _course_map, _course_summaries, question_for_model,
         current_deadlines,
         attachments=combined_doc_ids,
     )
 
-    user_content = f"[Course Content]\n{context}\n\n[Question]\n{question}"
+    user_content = f"[Course Content]\n{context}\n\n[Question]\n{question_for_model}"
     messages = list(api_history) + [{"role": "user", "content": user_content}]
 
     def event_stream():
@@ -713,8 +723,12 @@ async def chat(req: ChatRequest):
             full_response = "".join(full_parts)
             if is_incognito:
                 _save_incognito_turn(thread_id, question, full_response, attachments=attachment_meta)
+                if is_attachment_summary and attachment_meta and is_first_message:
+                    _incognito_threads[thread_id]["title"] = auto_title_from_message(attachment_meta[0]["name"])
             else:
                 append_message(thread_id, "user", question, attachments=attachment_meta)
+                if is_attachment_summary and attachment_meta and is_first_message:
+                    rename_thread(thread_id, auto_title_from_message(attachment_meta[0]["name"]))
                 append_message(thread_id, "assistant", full_response)
 
         except Exception as exc:

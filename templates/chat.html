@@ -1197,16 +1197,18 @@ async function sendMessage() {
 
   const input = document.getElementById('user-input');
   const text = input.value.trim();
-  if (!text) return;
-
-  input.value = '';
-  input.style.height = 'auto';
-  input.rows = 1;
 
   // Capture BEFORE clearing: objects {doc_id, name} for the bubble; plain strings for the request.
   const readyAttachments = pendingAttachments
     .filter(e => e.status === 'ready' && e.docId)
     .map(e => ({ doc_id: e.docId, name: e.name }));
+
+  if (!text && readyAttachments.length === 0) return;
+
+  input.value = '';
+  input.style.height = 'auto';
+  input.rows = 1;
+
   const readyDocIds = readyAttachments.map(a => a.doc_id);
 
   addMessage('user', renderMarkdown(text), false, readyAttachments);
@@ -1279,8 +1281,9 @@ async function sendMessage() {
             incognitoThread.updated_at = now;
             // Update title from first message
             if (incognitoThread.messages.length === 2) {
-              incognitoThread.title = text.replace(/\n/g, ' ').slice(0, 49) +
-                (text.length > 50 ? '…' : '');
+              const titleSource = text || (readyAttachments.length > 0 ? readyAttachments[0].name : '');
+              incognitoThread.title = titleSource.replace(/\n/g, ' ').slice(0, 49) +
+                (titleSource.length > 50 ? '…' : '');
             }
           }
 
