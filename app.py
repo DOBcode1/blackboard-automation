@@ -894,6 +894,7 @@ async def get_document_file(doc_id: str):
         abs_file,
         media_type=doc.get("mime_type") or "application/octet-stream",
         filename=doc.get("original_filename") or os.path.basename(abs_file),
+        content_disposition_type="inline",
     )
 
 

@@ -719,7 +719,8 @@
 <div id="preview-modal" class="modal-overlay" style="display:none" onclick="handlePreviewOverlayClick(event)">
   <div class="preview-modal-box" onclick="event.stopPropagation()">
     <div class="modal-header">
-      <h3 id="preview-modal-title" style="max-width:calc(100% - 40px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Document</h3>
+      <h3 id="preview-modal-title" style="max-width:calc(100% - 120px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">Document</h3>
+      <a id="preview-download-link" href="#" download style="font-size:12px;padding:4px 10px;border-radius:6px;background:var(--accent);color:#fff;text-decoration:none;white-space:nowrap;margin-right:8px">Download</a>
       <button class="modal-close" onclick="closePreview()">&#215;</button>
     </div>
     <div class="preview-modal-body" id="preview-modal-body"></div>
@@ -747,6 +748,10 @@ function openPreview(docId, filename) {
   document.getElementById('preview-modal-title').textContent = filename;
 
   const fileUrl = '/api/documents/' + docId + '/file';
+
+  const dlLink = document.getElementById('preview-download-link');
+  dlLink.href = fileUrl;
+  dlLink.download = filename;
 
   if (['png', 'jpg', 'jpeg', 'webp'].includes(ext)) {
     const img = document.createElement('img');
