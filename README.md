@@ -15,15 +15,34 @@ A tool that scrapes Blackboard Ultra, extracts text from every course item, pre-
 ```
 blackboard-automation/
   blackboard/
-    scraper.py      — Phase 2: course content metadata extraction
-    reader.py       — Phase 3: text extraction from each item
+    scraper.py                    — Phase 2: course content metadata extraction
+    reader.py                     — Phase 3: text extraction from each item
     __init__.py
-  extractor.py      — entry point for scraper
-  run_reader.py     — entry point for reader
-  query.py          — Phase 4: AI query engine (terminal + used by app.py)
-  app.py            — Phase 5: FastAPI local web UI
-  output/           — JSON output files + pre-processed caches
-  debug/            — HTML dumps for selector debugging
+  templates/
+    chat.html                     — main chat UI template (FastAPI/Jinja2)
+    calendar.html                 — /calendar route template
+    needs_attention.html          — /needs-attention route template
+    _na_card.html                 — partial: individual needs-attention card
+    _nav.html                     — partial: shared navigation bar
+  extractor.py                    — entry point: runs BlackboardScraper
+  run_reader.py                   — entry point: runs BlackboardReader over scraper output
+  app.py                          — FastAPI web UI (chat, calendar, needs-attention routes)
+  query.py                        — terminal AI query engine; also imported by app.py
+  llm_adapter.py                  — provider-agnostic LLM wrapper (call_fast / call_main / call_vision / embed)
+  ingestion.py                    — core ingestion pipeline: text → chunks → embeddings → document store
+  chunking.py                     — pure text-splitting into overlapping character chunks
+  embeddings.py                   — batch-embeds document chunks via llm_adapter; writes back to store
+  retrieval.py                    — cosine-similarity search over stored chunk embeddings
+  documents_helper.py             — persistence layer for document records and chunks (JSON backend)
+  chat_history_helper.py          — persistence layer for chat thread history (JSON backend)
+  overrides_helper.py             — read/write/apply user_overrides.json (deadline corrections)
+  extractors.py                   — Stage B file-text extractor (.txt, .md, .docx, .pdf; flags images for vision)
+  aggregate_deadlines.py          — aggregates parsed deadlines into output/deadlines.json for calendar
+  audit_deadlines.py              — quality audit of AI-extracted deadlines; prints structured report
+  migrate_scraped_to_documents.py — one-shot migration of scraped content_text JSON into document store
+  semester_config.json            — per-course semester anchors (start/end dates) used by deadline resolver
+  output/                         — JSON output files, pre-processed caches, deadlines.json
+  debug/                          — HTML dumps for selector debugging
 ```
 
 ---
@@ -231,19 +250,21 @@ Require another Blackboard account to test — NOT available right now.
 
 ## Things to work on now
 
-In order of priority for the next several weeks of work:
+In order of priority:
 
-1. **Phase 7 Stage A (Document ingestion pipeline)** — foundational build. Includes the LLM adapter migration, the unified document schema, ingestion pipeline, chunking, embedding, and retrieval. No new user-visible features but unlocks everything that follows.
+1. **Stage B remaining fixes** — inline PDF preview in the attachment modal (currently downloads instead of rendering in-browser); unsent-draft persistence (chat input should survive page reloads).
 
-2. **Phase 7 Stage B (User document upload)** — first user-visible feature built on Stage A. Drag-and-drop, paperclip button, document management page.
+2. **Stage D — decouple course summaries from the overrides system** — decouple course summaries from the overrides system, and move summaries into the retrieval layer so they're retrieved like other content rather than injected into the prompt wholesale. The exact approach (on-demand generation vs. stored-and-retrieved) is still to be designed.
 
-3. **Phase 7 Stage C (OCR backfill)** — extracts the ~160 currently-unreadable items per semester into the unified document store. Can run in parallel with Stage B if desired.
+3. **Fordham IT outreach (start now, longest lead time)** — register an Anthology developer account, then contact Fordham IT (Kanchan Thaokar, Sr. Manager Enterprise Learning Systems) to initiate the REST API access request. This is the prerequisite that unblocks Phase 10's auth path and has a weeks-to-months lead time; it should be initiated in parallel with all other work. **Not yet sent.**
 
-4. **Phase 9 (Operational maturity)** — structured logging, cost tracking, and the test suite. Distributed work that happens alongside Phase 7 stages, not as a standalone phase.
+4. **Phase 9 (Operational maturity)** — structured logging with per-operation context, token-usage tracking on every LLM call, retry/backoff on streaming errors, initial test coverage for ingestion and retrieval. Distributed alongside ongoing feature work, not a standalone phase.
 
-5. **The Fordham IT email** — drafted and sent. This is the path to Stage 3 (sanctioned API access) and has the longest timeline (weeks to months). Send it before the technical work is done.
+4. **Phase 9.5 — Announcement scraping** — scrape the Blackboard announcements feed per course and ingest announcements into the document store. Announcements are high-signal (professor corrections, deadline changes, exam logistics) and currently invisible to the query engine.
 
-6. **Three scraper bugs** — parked until a second Blackboard account is available.
+5. **Phase 10 — Production rebuild** — gated on the outcome of the Fordham IT conversation. Includes: PostgreSQL storage backend, multi-user auth, onboarding flow, mobile-friendly UI, deployment. Do not start until the IT conversation has produced a clear path (sanctioned API vs. continued scraping).
+
+**On hold:** Stage C (OCR backfill of publisher materials) is parked pending attorney review of whether OCR'ing publisher-controlled PDFs creates copyright exposure.
 
 ---
 
