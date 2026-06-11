@@ -809,6 +809,70 @@ function removeAttachment(name) {
   if (entry.chipEl) entry.chipEl.remove();
   const area = document.getElementById('attachments-area');
   if (pendingAttachments.length === 0) area.style.display = 'none';
+  saveDraft();
+}
+
+// ── Composer draft persistence ─────────────────────────────────────────────
+const DRAFT_KEY = 'bb_composer_draft';
+
+function saveDraft() {
+  const text = document.getElementById('user-input').value;
+  const attachments = pendingAttachments
+    .filter(e => e.status === 'ready' && e.docId)
+    .map(e => ({ docId: e.docId, name: e.name }));
+  localStorage.setItem(DRAFT_KEY, JSON.stringify({ text, attachments }));
+}
+
+function clearDraft() {
+  localStorage.removeItem(DRAFT_KEY);
+}
+
+function restoreDraft() {
+  const raw = localStorage.getItem(DRAFT_KEY);
+  if (!raw) return;
+  let draft;
+  try { draft = JSON.parse(raw); } catch { return; }
+
+  const input = document.getElementById('user-input');
+  if (draft.text) {
+    input.value = draft.text;
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 160) + 'px';
+  }
+
+  if (draft.attachments && draft.attachments.length > 0) {
+    const area = document.getElementById('attachments-area');
+    for (const att of draft.attachments) {
+      const entry = { name: att.name, docId: att.docId, status: 'ready', chipEl: null };
+      pendingAttachments.push(entry);
+
+      const chip = document.createElement('div');
+      chip.className = 'attach-chip clickable';
+      chip.onclick = () => openPreview(entry.docId, entry.name);
+
+      const nameSpan = document.createElement('span');
+      nameSpan.className = 'chip-name';
+      nameSpan.title = att.name;
+      nameSpan.textContent = att.name;
+
+      const stateSpan = document.createElement('span');
+      stateSpan.className = 'chip-state';
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'chip-remove';
+      removeBtn.title = 'Remove';
+      removeBtn.textContent = '\u00d7';
+      removeBtn.onclick = (e) => { e.stopPropagation(); removeAttachment(att.name); };
+
+      chip.appendChild(nameSpan);
+      chip.appendChild(stateSpan);
+      chip.appendChild(removeBtn);
+
+      entry.chipEl = chip;
+      area.appendChild(chip);
+    }
+    area.style.display = 'flex';
+  }
 }
 
 // ── Init ───────────────────────────────────────────────────────────────────
@@ -838,6 +902,7 @@ function removeAttachment(name) {
   }
 
   updateBanners();
+  restoreDraft();
 })();
 
 // ── Thread list management ─────────────────────────────────────────────────
@@ -969,6 +1034,7 @@ function updateBanners() {
 // ── New thread / incognito ─────────────────────────────────────────────────
 async function newChat() {
   clearAttachments();
+  clearDraft();
   try {
     const resp = await fetch('/api/threads', {
       method: 'POST',
@@ -985,6 +1051,7 @@ async function newChat() {
 
 async function newIncognito() {
   clearAttachments();
+  clearDraft();
   try {
     const resp = await fetch('/api/threads', {
       method: 'POST',
@@ -1324,6 +1391,7 @@ async function sendMessage() {
 
   addMessage('user', renderMarkdown(text), false, readyAttachments);
   clearAttachments();
+  clearDraft();
   const aiBubble = addMessage('assistant', '', true);
 
   isStreaming = true;
@@ -1480,6 +1548,7 @@ async function uploadFile(file) {
       stateSpan.textContent = '';
       chip.classList.add('clickable');
       chip.onclick = () => openPreview(entry.docId, entry.name);
+      saveDraft();
     } else {
       entry.status = 'failed';
       chip.classList.add('failed');
@@ -1554,6 +1623,7 @@ const inputEl = document.getElementById('user-input');
 inputEl.addEventListener('input', () => {
   inputEl.style.height = 'auto';
   inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+  saveDraft();
 });
 inputEl.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) {
