@@ -5,6 +5,7 @@ Reads ANTHROPIC_API_KEY from the environment; never hardcodes credentials.
 
 import os
 import time
+import logging
 import anthropic
 
 from dataclasses import dataclass, field
@@ -18,6 +19,44 @@ MODEL_MAIN = "claude-sonnet-4-6"            # main tier (query.py)
 
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBEDDING_DIM = 384
+
+# ---------------------------------------------------------------------------
+# Structured logger — stderr only; file handlers added in a later phase
+# ---------------------------------------------------------------------------
+logger = logging.getLogger("llm_adapter")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s [llm_adapter] %(message)s", datefmt="%H:%M:%S"))
+    logger.addHandler(_h)
+logger.setLevel(logging.DEBUG)
+
+# ---------------------------------------------------------------------------
+# Pricing table — (input_$/M, output_$/M)
+# ---------------------------------------------------------------------------
+_PRICING: dict[str, tuple[float, float]] = {
+    MODEL_FAST: (1.0, 5.0),
+    MODEL_MAIN: (3.0, 15.0),
+}
+
+
+def _compute_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    if model not in _PRICING:
+        logger.warning("no pricing entry for model=%s — cost unknown", model)
+        return None
+    in_rate, out_rate = _PRICING[model]
+    return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
+
+
+def _log_call(model: str, usage: dict, duration_ms: float) -> None:
+    try:
+        in_tok = usage.get("input_tokens", 0)
+        out_tok = usage.get("output_tokens", 0)
+        cost = _compute_cost(model, in_tok, out_tok)
+        cost_str = f"${cost:.6f}" if cost is not None else "unknown"
+        logger.info("model=%s in=%d out=%d cost=%s dur=%dms", model, in_tok, out_tok, cost_str, round(duration_ms))
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Lazy client — created on first use so importing this module never requires
@@ -101,14 +140,16 @@ def _collect_text(response) -> str:
 def _stream_chunks(model: str, messages: list, system: str | None, max_tokens: int) -> Generator[str, None, None]:
     """Yield text chunks from a streaming messages call; capture usage if available."""
     kwargs = _build_kwargs(model, messages, system, max_tokens)
+    t0 = time.perf_counter()
     with _with_retry(_get_client().messages.stream, **kwargs) as stream:
         for text in stream.text_stream:
             yield text
-        # Usage is captured after the stream closes; ignore failures silently
+        dur = (time.perf_counter() - t0) * 1000
         try:
-            _ = stream.get_final_message()
-        except Exception:
-            pass
+            final = stream.get_final_message()
+            _log_call(model, _extract_usage(final), dur)
+        except Exception as exc:
+            logger.warning("get_final_message failed — stream usage not captured: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -125,8 +166,12 @@ def call_fast(
     if stream:
         return _stream_chunks(MODEL_FAST, messages, system, max_tokens)
     kwargs = _build_kwargs(MODEL_FAST, messages, system, max_tokens)
+    t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
-    return LLMResult(text=_collect_text(response), usage=_extract_usage(response))
+    dur = (time.perf_counter() - t0) * 1000
+    result = LLMResult(text=_collect_text(response), usage=_extract_usage(response))
+    _log_call(MODEL_FAST, result.usage, dur)
+    return result
 
 
 def call_main(
@@ -139,8 +184,12 @@ def call_main(
     if stream:
         return _stream_chunks(MODEL_MAIN, messages, system, max_tokens)
     kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens)
+    t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
-    return LLMResult(text=_collect_text(response), usage=_extract_usage(response))
+    dur = (time.perf_counter() - t0) * 1000
+    result = LLMResult(text=_collect_text(response), usage=_extract_usage(response))
+    _log_call(MODEL_MAIN, result.usage, dur)
+    return result
 
 
 def call_vision(
@@ -150,8 +199,12 @@ def call_vision(
 ) -> LLMResult:
     """Route to the main (Sonnet) model; messages may contain image content blocks."""
     kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens)
+    t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
-    return LLMResult(text=_collect_text(response), usage=_extract_usage(response))
+    dur = (time.perf_counter() - t0) * 1000
+    result = LLMResult(text=_collect_text(response), usage=_extract_usage(response))
+    _log_call(MODEL_MAIN, result.usage, dur)
+    return result
 
 
 def embed(texts: list[str]) -> list[list[float]]:

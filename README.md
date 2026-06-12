@@ -980,6 +980,22 @@ The school the user belongs to is inferred from their email domain at sign-in ti
 
 Each feature is incrementally useful — ship Word + PDF first, layer in the rest as demand justifies.
 
+### Usage analytics and the data-collection boundary
+
+**Goal.** Beyond operational debugging, the product will eventually collect per-user usage data to develop product insight — what early users ask most, which functions get used most (chat, calendar, uploads, overrides, deadline review), and how behavior trends over time. This informs product decisions and strengthens the eventual unit-economics and traction story.
+
+This is distinct from the `audit_log` table named in Phase 10, which exists for compliance and debugging. Analytics-for-product-decisions is a separate intent and is governed by the staged boundary below.
+
+**Stage 1 — Now (rides on P1 structured logging).** Log event *shape* only: "an action of type X happened" — chat sent, file uploaded, override edited, item dismissed, calendar add, router path taken — with a timestamp and a `user_id` placeholder (`local_dev` until accounts exist). No question text, no response text, no user content. This is operational telemetry and carries no content-privacy risk.
+
+**Stage 2 — At Phase 10 (accounts exist).** Attach a real `user_id` to those events and persist them to a queryable store (the audit_log / event-ledger pattern). Per-user behavioral insight becomes possible because there is finally a person to attribute events to. Still no query or response content.
+
+**Stage 3 — At Phase 12 (privacy/consent exists).** Only now may the system retain query text and response content for analysis ("what do users ask most"). This is the most valuable data and the most sensitive data. It is gated behind Phase 12's privacy policy, stated retention period, and explicit consent — retaining user content without that scaffolding is a commitment that cannot be cleanly undone.
+
+**Cross-cutting rule.** Incognito / "memory off" must be respected at every stage. Whatever is logged or collected honors the same boundary the chat already enforces. Incognito activity is never persisted for analytics.
+
+**Rationale.** The technical build for content capture is trivial — every question and response already passes through the chat handler in `app.py`. The reason to wait is legal and ethical, not technical. This boundary is documented here precisely so a future change does not bolt query-text storage onto the early event logging without realizing there was an intentional gate.
+
 ### What NOT to do
 
 - Don't position the product as an AI tool. The category is saturated and the framing puts the product in competition with ChatGPT, which it will lose.
