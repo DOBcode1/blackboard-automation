@@ -287,7 +287,7 @@ Manual login on a controlled setup; run the pipeline on real accounts; watch whe
 
 *Exit condition:* 5–10 real failure modes found and the worst fixed.
 
-**Parallel track (zero build cost, start now): Send the Fordham IT email this week.** Register the Anthology developer account, contact Kanchan Thaokar (Sr. Manager Enterprise Learning Systems), then forget it while building. Longest lead-time item in the plan. Stage D stays a design pass with build deferred until after P4 unless stress testing forces it earlier.
+**Parallel track:** Stage D stays a design pass with build deferred until after P4 unless stress testing forces it earlier. Fordham IT outreach is now deferred until after P4 — the product must be proven on multiple real accounts with a small user base before reaching out, because walking in with proof and traction is a far stronger position than walking in asking permission. Register the Anthology developer account and contact Kanchan Thaokar (Sr. Manager Enterprise Learning Systems) at that later point, not now.
 
 **Explicitly deferred until the micro-beta proves the core generalizes:** UI polish, Google Calendar sync, SMS, document export, multi-semester logic, Phase 9.5 announcement scraping, all of Phase 10. Stage C stays on attorney hold. The scraper gets bug fixes only when P4 supplies test accounts — nothing more.
 
@@ -991,7 +991,7 @@ Each feature is incrementally useful — ship Word + PDF first, layer in the res
 
 ### The Fordham IT email
 
-Send this earlier rather than later, even before there's anything to demo. The conversation timeline at universities is weeks to months. Running that conversation in parallel with development costs nothing and unlocks the Stage 3 path. Initial framing: a student-built study tool seeking sanctioned access via the Blackboard Learn REST API, with a clear story about good-faith development on the student's own account and a desire to do this the right way as the tool grows.
+Send this after the product is validated on other accounts and a small user base exists — not before there is anything to demo. The conversation timeline at universities is weeks to months; that lead time is a known cost of waiting, and it is outweighed by the leverage of arriving with proven traction. Walking in with real users and real usage data is a fundamentally stronger position than asking permission before anything has been built for anyone else. Initial framing: a student-built study tool seeking sanctioned access via the Blackboard Learn REST API, with a clear story about good-faith development on the student's own account and a desire to do this the right way as the tool grows.
 
 ---
 
