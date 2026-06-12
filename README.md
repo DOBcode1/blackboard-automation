@@ -998,6 +998,7 @@ This section documents the gaps between the current state of the codebase and th
 - **No error monitoring.** Unhandled exceptions crash the relevant request but are not aggregated or reported. Phase 9c addresses this.
 - **No security audit.** Inputs are not systematically sanitized; uploaded files (when implemented) need malicious-file scanning. Phase 9e addresses this before any external user has access.
 - **Three known scraper bugs require a second Blackboard account to test** (Social Psych popover, British Government scroll, International Internship container bleed). These are minor and isolated; the scraper handles the majority of cases reliably.
+- **Switching chats while a file attachment is still reading loses the in-progress attachment.** The file finishes processing on the server, but the UI state is discarded. Narrow timing window; parked, not worth fixing yet.
 
 ### What this codebase is NOT yet
 
