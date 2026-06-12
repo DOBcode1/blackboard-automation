@@ -250,21 +250,58 @@ Require another Blackboard account to test — NOT available right now.
 
 ## Things to work on now
 
-In order of priority:
+The near-term priority order is to prove the system generalizes before building anything new. Four sequential phases plus one parallel track.
 
-1. **Stage B remaining fixes** — inline PDF preview in the attachment modal (currently downloads instead of rendering in-browser); unsent-draft persistence (chat input should survive page reloads).
+**P1 — Instrument it (make failures visible)**
 
-2. **Stage D — decouple course summaries from the overrides system** — decouple course summaries from the overrides system, and move summaries into the retrieval layer so they're retrieved like other content rather than injected into the prompt wholesale. The exact approach (on-demand generation vs. stored-and-retrieved) is still to be designed.
+The trimmed core of Phase 9, pulled forward because stress testing is pointless without observability.
 
-3. **Fordham IT outreach (start now, longest lead time)** — register an Anthology developer account, then contact Fordham IT (Kanchan Thaokar, Sr. Manager Enterprise Learning Systems) to initiate the REST API access request. This is the prerequisite that unblocks Phase 10's auth path and has a weeks-to-months lead time; it should be initiated in parallel with all other work. **Not yet sent.**
+- Structured logging replacing `print()` throughout — starting in `llm_adapter.py`, the chokepoint every LLM call flows through, then spreading outward
+- Per-call token and cost tracking *including streaming calls* — streaming usage is currently discarded, a known gap
+- Retry/backoff on streaming calls — the existing retry wrapper doesn't cover stream open
 
-4. **Phase 9 (Operational maturity)** — structured logging with per-operation context, token-usage tracking on every LLM call, retry/backoff on streaming errors, initial test coverage for ingestion and retrieval. Distributed alongside ongoing feature work, not a standalone phase.
+*Deferred from Phase 9 for now:* performance budgets and documentation polish.
 
-4. **Phase 9.5 — Announcement scraping** — scrape the Blackboard announcements feed per course and ingest announcements into the document store. Announcements are high-signal (professor corrections, deadline changes, exam logistics) and currently invisible to the query engine.
+**P2 — Break it on purpose (adversarial test corpus)**
 
-5. **Phase 10 — Production rebuild** — gated on the outcome of the Fordham IT conversation. Includes: PostgreSQL storage backend, multi-user auth, onboarding flow, mobile-friendly UI, deployment. Do not start until the IT conversation has produced a clear path (sanctioned API vs. continued scraping).
+Build 10–15 synthetic worst-case inputs and run them through the full preprocessing → aggregation pipeline. Log every failure. Two failure classes warrant special attention:
+
+- **Confident-but-wrong** — the worst case for trust
+- **Silently dropped items** — the regex in `aggregate_deadlines.py` parses the LLM's markdown output; if Sonnet drifts from the exact `### Assignment / **Name:** / **Due Date Resolved:**` format, assignments vanish with no error
+
+Adversarial inputs to include: vague dates ("midterm sometime in October"); conflicting dates across Blackboard vs. syllabus vs. announcement; wall-of-text syllabi with no headings; courses using "Session N" instead of "Week N"; dateless graded discussions.
+
+Also stress-test override-ID fragility: deadline IDs are `course_id+title-slug+index`, so a re-scrape that changes a title silently orphans the user's correction. Re-run after a simulated title change and verify edits survive or at least surface a warning.
+
+*Exit condition:* can no longer easily break own extraction. Fix the top 5 failure modes found.
+
+**P3 — Today view (the one feature that earns daily opens)**
+
+A decision-first landing page: what's due, ranked by urgency × confidence. Show only high-confidence items by default; route uncertainty to the existing needs-attention page. Deliberately ugly-but-functional — a sorted list built entirely on existing `deadlines.json` data. Confidence weighting deferred until Phase 6.5c exists; do not block on it.
+
+Ships *after* P1/P2. A Today view built on un-stress-tested extraction is just a confident display of possibly-wrong dates.
+
+**P4 — Micro-beta (2–3 friends)**
+
+Manual login on a controlled setup; run the pipeline on real accounts; watch where it breaks. Goals: tests generalization on real messy data, unblocks the three parked scraper bugs (finally a second Blackboard account), and reveals whether the Today view actually gets reopened. Log everything; polish nothing first.
+
+*Exit condition:* 5–10 real failure modes found and the worst fixed.
+
+**Parallel track (zero build cost, start now): Send the Fordham IT email this week.** Register the Anthology developer account, contact Kanchan Thaokar (Sr. Manager Enterprise Learning Systems), then forget it while building. Longest lead-time item in the plan. Stage D stays a design pass with build deferred until after P4 unless stress testing forces it earlier.
+
+**Explicitly deferred until the micro-beta proves the core generalizes:** UI polish, Google Calendar sync, SMS, document export, multi-semester logic, Phase 9.5 announcement scraping, all of Phase 10. Stage C stays on attorney hold. The scraper gets bug fixes only when P4 supplies test accounts — nothing more.
+
+The detailed phase specs in the Full roadmap below (6.5x, 9, 9.5, 10, 11, 12) remain valid as a library of future work and contain the reference designs for HOW to build each piece. They are not the near-term priority order.
 
 **On hold:** Stage C (OCR backfill of publisher materials) is parked pending attorney review of whether OCR'ing publisher-controlled PDFs creates copyright exposure.
+
+---
+
+## Current strategic posture
+
+The project has shifted from feature-building to proving the system survives contact with other people's messy Blackboard data. The milestone is no longer "feature complete" or "pretty UI" — it is "I gave this to 3 people and it didn't break badly." That means building on a foundation of knowable failures, not on an assumption that extraction works well enough.
+
+This reframing is why P1/P2 (instrumentation and stress testing, with no visible product change) come before P3/P4. The detailed phase specs below — 6.5x, 9, 9.5, 10, 11, 12 — remain valid as a library of future work and reference designs. They are not the near-term priority order.
 
 ---
 
@@ -999,6 +1036,9 @@ This section documents the gaps between the current state of the codebase and th
 - **No security audit.** Inputs are not systematically sanitized; uploaded files (when implemented) need malicious-file scanning. Phase 9e addresses this before any external user has access.
 - **Three known scraper bugs require a second Blackboard account to test** (Social Psych popover, British Government scroll, International Internship container bleed). These are minor and isolated; the scraper handles the majority of cases reliably.
 - **Switching chats while a file attachment is still reading loses the in-progress attachment.** The file finishes processing on the server, but the UI state is discarded. Narrow timing window; parked, not worth fixing yet.
+- **Deadline pipeline is regex-parsing LLM-generated markdown.** If Sonnet drifts from the exact `### Assignment / **Name:** / **Due Date Resolved:**` format, assignments are silently dropped rather than flagged as errors. P2 stress-tests this directly.
+- **Override IDs are fragile across re-scrapes.** Deadline IDs are `course_id+title-slug+index`; a re-scrape that changes a title silently orphans any user correction for that item. P2 includes a simulated title-change test to surface this.
+- **No observability yet means generalization failures will be invisible.** Without structured logging and cost tracking (P1), failures on a second user's account may produce no error — just silently wrong output.
 
 ### What this codebase is NOT yet
 
