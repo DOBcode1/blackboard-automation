@@ -1370,8 +1370,14 @@ function addMessage(role, htmlContent, isTyping = false, attachments = []) {
   return bubble;
 }
 
+function updateSendBtn() {
+  const processing = pendingAttachments.some(e => e.status !== 'ready' && e.status !== 'failed');
+  document.getElementById('send-btn').disabled = isStreaming || processing;
+}
+
 async function sendMessage() {
   if (isStreaming) return;
+  if (pendingAttachments.some(e => e.status !== 'ready' && e.status !== 'failed')) return;
 
   const input = document.getElementById('user-input');
   const text = input.value.trim();
@@ -1395,7 +1401,7 @@ async function sendMessage() {
   const aiBubble = addMessage('assistant', '', true);
 
   isStreaming = true;
-  document.getElementById('send-btn').disabled = true;
+  updateSendBtn();
 
   let fullText = '';
   let firstChunk = true;
@@ -1479,7 +1485,7 @@ async function sendMessage() {
     aiBubble.innerHTML = `<em style="color:#c0392b">Error: ${err.message}</em>`;
   } finally {
     isStreaming = false;
-    document.getElementById('send-btn').disabled = false;
+    updateSendBtn();
   }
 }
 
@@ -1540,6 +1546,7 @@ async function uploadFile(file) {
   area.style.display = 'flex';
 
   uploadBtn.disabled = true;
+  updateSendBtn();
 
   const finishUpload = (ok, errMsg) => {
     // entry may have been removed by user click; skip DOM update if so
@@ -1556,6 +1563,7 @@ async function uploadFile(file) {
     }
     uploadBtn.disabled = false;
     fileInput.value = '';
+    updateSendBtn();
   };
 
   try {

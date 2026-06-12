@@ -702,6 +702,12 @@ async def chat(req: ChatRequest):
     user_content = f"[Course Content]\n{context}\n\n[Question]\n{question_for_model}"
     messages = list(api_history) + [{"role": "user", "content": user_content}]
 
+    # Persist the user turn immediately so a mid-stream reload doesn't lose it.
+    if not is_incognito:
+        append_message(thread_id, "user", question, attachments=attachment_meta)
+        if is_attachment_summary and attachment_meta and is_first_message:
+            rename_thread(thread_id, auto_title_from_message(attachment_meta[0]["name"]))
+
     def event_stream():
         full_parts: list[str] = []
 
@@ -726,9 +732,6 @@ async def chat(req: ChatRequest):
                 if is_attachment_summary and attachment_meta and is_first_message:
                     _incognito_threads[thread_id]["title"] = auto_title_from_message(attachment_meta[0]["name"])
             else:
-                append_message(thread_id, "user", question, attachments=attachment_meta)
-                if is_attachment_summary and attachment_meta and is_first_message:
-                    rename_thread(thread_id, auto_title_from_message(attachment_meta[0]["name"]))
                 append_message(thread_id, "assistant", full_response)
 
         except Exception as exc:
