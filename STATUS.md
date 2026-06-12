@@ -23,6 +23,7 @@ Blackboard Ultra content extraction + AI conversational query engine, heading to
 ## Known small issues (parked, not worth fixing yet)
 - Attaching a file then switching chats mid-read loses the in-progress attachment (narrow window; the file still completes server-side).
 - Three scraper bugs (Social Psych popover, British Gov lazy-load, International Internship DOM) — need a second Blackboard account to test.
+- Haiku router JSON fragility — route_question_to_courses parses Haiku's output with a bare json.loads. Observed a live JSONDecodeError fall back to all courses (fail-open worked, user got a correct answer, but the fallback sent ~32K tokens to Sonnet at ~$0.11 for one query). Likely cause: Haiku occasionally wrapping its JSON array in markdown ```json fences. Low-effort fix (strip code fences before parsing) but belongs in P2's extraction-robustness work, not a one-off patch. Flagged because the silent failure has a real cost tail — every fail-open query costs like a worst-case all-courses query, which is the exact scenario the router exists to prevent.
 
 ## Key decisions & principles (orient fast)
 - The scraper is PLUMBING, not the moat. Moats = distribution, per-school data network effects, workflow lock-in. Everything from ingestion.py onward is already REST-API-ready; migrating off Playwright means writing a new ingestion script feeding the same document store — the coupling is the data SCHEMA, not Playwright. Don't over-invest in the scraper; don't parallelize it before the API-path decision.

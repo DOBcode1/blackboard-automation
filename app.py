@@ -6,6 +6,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import sys
 import time
@@ -63,6 +64,17 @@ from query import (
     short_label,
 )
 from llm_adapter import call_main
+
+# ---------------------------------------------------------------------------
+# Structured logger
+# ---------------------------------------------------------------------------
+logger = logging.getLogger("app")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s [app] %(message)s", datefmt="%H:%M:%S"))
+    logger.addHandler(_h)
+logger.setLevel(logging.DEBUG)
+_USER_ID = "local_dev"
 
 # ---------------------------------------------------------------------------
 # Calendar — color palette & template setup
@@ -366,6 +378,13 @@ async def put_override(deadline_id: str, request: Request):
     if dismissed is not None:
         logged_fields.append("dismissed")
     print(f"[overrides] PUT {deadline_id} fields: {logged_fields}")
+    try:
+        logger.info(
+            "event=override_edit user_id=%s fields=%s dismissed=%s",
+            _USER_ID, list(edits.keys()) if edits else [], dismissed,
+        )
+    except Exception:
+        pass
 
     result: dict = {"deadline_id": deadline_id, "override": get_override(overrides, deadline_id)}
     if warning:
@@ -410,6 +429,10 @@ async def post_override_manual(request: Request):
     warning = _run_aggregator()
 
     print(f"[overrides] POST manual {deadline_id} fields: {list(edits.keys())}")
+    try:
+        logger.info("event=override_manual_add user_id=%s fields=%s", _USER_ID, list(edits.keys()))
+    except Exception:
+        pass
 
     result: dict = {"deadline_id": deadline_id, "override": get_override(overrides, deadline_id)}
     if warning:
@@ -661,6 +684,14 @@ async def chat(req: ChatRequest):
         thread_id = create_thread()
         is_incognito = False
 
+    try:
+        logger.info(
+            "event=chat user_id=%s thread_id=%s incognito=%s is_attachment_summary=%s n_attachments=%d n_courses_matched=%d",
+            _USER_ID, thread_id, is_incognito, is_attachment_summary, len(req.attachments), len(matched_ids),
+        )
+    except Exception:
+        pass
+
     # --- Collect all attachment doc_ids across the conversation ---
     # Gather from prior user messages stored in this thread, then union with
     # the current request's attachments, so follow-up questions still see them.
@@ -772,6 +803,10 @@ def _process_upload(job_id: str, data: bytes, safe_name: str, mime_type: str, th
     except Exception as exc:
         job["status"] = "failed"
         job["error"] = f"Extraction error: {exc}"
+        try:
+            logger.info("event=upload_done user_id=%s status=failed extraction_method=unknown", _USER_ID)
+        except Exception:
+            pass
         return
 
     if method == "needs_vision":
@@ -780,11 +815,19 @@ def _process_upload(job_id: str, data: bytes, safe_name: str, mime_type: str, th
         except Exception as exc:
             job["status"] = "failed"
             job["error"] = f"Vision extraction error: {exc}"
+            try:
+                logger.info("event=upload_done user_id=%s status=failed extraction_method=%s", _USER_ID, method)
+            except Exception:
+                pass
             return
 
     if not text:
         job["status"] = "failed"
         job["error"] = "No readable text could be extracted."
+        try:
+            logger.info("event=upload_done user_id=%s status=failed extraction_method=%s", _USER_ID, method)
+        except Exception:
+            pass
         return
 
     # --- Ingest ---
@@ -804,6 +847,10 @@ def _process_upload(job_id: str, data: bytes, safe_name: str, mime_type: str, th
     if doc_id is None:
         job["status"] = "failed"
         job["error"] = "No readable text could be extracted."
+        try:
+            logger.info("event=upload_done user_id=%s status=failed extraction_method=%s", _USER_ID, method)
+        except Exception:
+            pass
         return
 
     # --- Save original file bytes ---
@@ -816,6 +863,10 @@ def _process_upload(job_id: str, data: bytes, safe_name: str, mime_type: str, th
 
     print(f"[upload] ingested {safe_name!r} → doc_id={doc_id} method={method}")
     job["status"] = "ready"
+    try:
+        logger.info("event=upload_done user_id=%s status=ready extraction_method=%s", _USER_ID, method)
+    except Exception:
+        pass
     job["doc_id"] = doc_id
 
 
@@ -860,6 +911,10 @@ async def upload_document(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     background_tasks.add_task(_process_upload, job_id, data, safe_name, mime_type, thread_id)
+    try:
+        logger.info("event=upload user_id=%s ext=%s file_size_bytes=%d", _USER_ID, ext, len(data))
+    except Exception:
+        pass
     return JSONResponse({"job_id": job_id, "status": "processing"}, status_code=202)
 
 
