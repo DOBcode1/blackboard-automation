@@ -35,6 +35,9 @@ output/
 # Debug dumps
 debug/
 
+# Operational logs
+logs/
+
 # IDE
 .vscode/
 .idea/

@@ -6,7 +6,6 @@ Usage:
 """
 
 import json
-import logging
 import os
 import sys
 import time
@@ -64,16 +63,12 @@ from query import (
     short_label,
 )
 from llm_adapter import call_main
+from logging_setup import get_logger
 
 # ---------------------------------------------------------------------------
 # Structured logger
 # ---------------------------------------------------------------------------
-logger = logging.getLogger("app")
-if not logger.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("%(asctime)s [app] %(message)s", datefmt="%H:%M:%S"))
-    logger.addHandler(_h)
-logger.setLevel(logging.DEBUG)
+logger = get_logger("app")
 _USER_ID = "local_dev"
 
 # ---------------------------------------------------------------------------

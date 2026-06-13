@@ -5,8 +5,8 @@ Reads ANTHROPIC_API_KEY from the environment; never hardcodes credentials.
 
 import os
 import time
-import logging
 import anthropic
+from logging_setup import get_logger
 
 from dataclasses import dataclass, field
 from typing import Generator
@@ -21,14 +21,9 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 EMBEDDING_DIM = 384
 
 # ---------------------------------------------------------------------------
-# Structured logger — stderr only; file handlers added in a later phase
+# Structured logger
 # ---------------------------------------------------------------------------
-logger = logging.getLogger("llm_adapter")
-if not logger.handlers:
-    _h = logging.StreamHandler()
-    _h.setFormatter(logging.Formatter("%(asctime)s [llm_adapter] %(message)s", datefmt="%H:%M:%S"))
-    logger.addHandler(_h)
-logger.setLevel(logging.DEBUG)
+logger = get_logger("llm_adapter")
 
 # ---------------------------------------------------------------------------
 # Pricing table — (input_$/M, output_$/M)
