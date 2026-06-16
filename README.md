@@ -392,6 +392,8 @@ All three methods feed into the same JSON structure and are followed by a mandat
 
 The screenshot method is the demo-friendly path — drag-drop-done is the magic moment for marketing.
 
+**Why class-schedule capture is load-bearing, not cosmetic:** Weekday resolution for "Week N" deadlines has two fixes in priority order. Primary: the preprocessing resolver should read the weekday already present in the source text (e.g. "Week 10 Tuesday seminar") rather than defaulting to a fixed day — most day information is already in the syllabus prose. Secondary/durable: for genuinely day-less "Week N" references where no weekday appears anywhere in the text, the captured per-course class meeting schedule provides the fallback day. This is the concrete reason the `class_meetings` table matters: it resolves the residual cases the prose alone cannot. (Context: a confirmed bug had day-unspecified Week N deadlines defaulting to Friday, placing assignments on a day with no class.)
+
 **Calendar features:**
 - In-app calendar view at `/calendar`, color-coded by course
 - AI-driven additions via chat:
@@ -979,6 +981,10 @@ The school the user belongs to is inferred from their email domain at sign-in ti
 4. PowerPoint (.pptx) — lower priority; students rarely need AI-generated slides
 
 Each feature is incrementally useful — ship Word + PDF first, layer in the rest as demand justifies.
+
+### Per-course view (deferred, post-micro-beta)
+
+A dedicated page per enrolled course surfacing all of that course's items — including ungraded/ongoing items (participation, extra credit, practice quizzes) that are correctly kept off the deadline calendar but currently only visible in the needs-attention list. Giving these a clear per-course home makes students aware of them without cluttering the calendar. Deferred until after the P4 micro-beta — this is a feature, not a proof — captured here so it is not lost.
 
 ### Usage analytics and the data-collection boundary
 
