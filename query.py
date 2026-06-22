@@ -275,7 +275,7 @@ def preprocess_courses(data: dict,
             response = call_main(
                 messages=[{"role": "user", "content": user_message}],
                 system=prompt,
-                max_tokens=4096,
+                max_tokens=8192,
                 temperature=0.0,
             )
             summary = response.text
@@ -286,7 +286,7 @@ def preprocess_courses(data: dict,
                 response = call_main(
                     messages=[{"role": "user", "content": user_message}],
                     system=prompt,
-                    max_tokens=4096,
+                    max_tokens=8192,
                     temperature=0.0,
                 )
                 summary = response.text
