@@ -91,11 +91,14 @@ _RETRYABLE = (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.
 _MAX_RETRIES = 3
 
 
-def _build_kwargs(model: str, messages: list, system: str | None, max_tokens: int) -> dict:
+def _build_kwargs(model: str, messages: list, system: str | None, max_tokens: int,
+                  temperature: float | None = None) -> dict:
     """Assemble the kwargs dict for a messages.create call."""
     kwargs = {"model": model, "messages": messages, "max_tokens": max_tokens}
     if system is not None:
         kwargs["system"] = system
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     return kwargs
 
 
@@ -132,9 +135,10 @@ def _collect_text(response) -> str:
     return "".join(block.text for block in response.content if hasattr(block, "text"))
 
 
-def _stream_chunks(model: str, messages: list, system: str | None, max_tokens: int) -> Generator[str, None, None]:
+def _stream_chunks(model: str, messages: list, system: str | None, max_tokens: int,
+                   temperature: float | None = None) -> Generator[str, None, None]:
     """Yield text chunks from a streaming messages call; capture usage if available."""
-    kwargs = _build_kwargs(model, messages, system, max_tokens)
+    kwargs = _build_kwargs(model, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
     with _with_retry(_get_client().messages.stream, **kwargs) as stream:
         for text in stream.text_stream:
@@ -156,11 +160,12 @@ def call_fast(
     system: str | None = None,
     max_tokens: int = 1024,
     stream: bool = False,
+    temperature: float | None = None,
 ) -> LLMResult | Generator[str, None, None]:
     """Route to the fast (Haiku) model. Returns LLMResult or a text-chunk generator."""
     if stream:
-        return _stream_chunks(MODEL_FAST, messages, system, max_tokens)
-    kwargs = _build_kwargs(MODEL_FAST, messages, system, max_tokens)
+        return _stream_chunks(MODEL_FAST, messages, system, max_tokens, temperature)
+    kwargs = _build_kwargs(MODEL_FAST, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
     dur = (time.perf_counter() - t0) * 1000
@@ -174,11 +179,12 @@ def call_main(
     system: str | None = None,
     max_tokens: int = 4096,
     stream: bool = False,
+    temperature: float | None = None,
 ) -> LLMResult | Generator[str, None, None]:
     """Route to the main (Sonnet) model. Returns LLMResult or a text-chunk generator."""
     if stream:
-        return _stream_chunks(MODEL_MAIN, messages, system, max_tokens)
-    kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens)
+        return _stream_chunks(MODEL_MAIN, messages, system, max_tokens, temperature)
+    kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
     dur = (time.perf_counter() - t0) * 1000
@@ -191,9 +197,10 @@ def call_vision(
     messages: list,
     system: str | None = None,
     max_tokens: int = 4096,
+    temperature: float | None = None,
 ) -> LLMResult:
     """Route to the main (Sonnet) model; messages may contain image content blocks."""
-    kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens)
+    kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
     dur = (time.perf_counter() - t0) * 1000

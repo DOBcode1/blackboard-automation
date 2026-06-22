@@ -276,6 +276,7 @@ def preprocess_courses(data: dict,
                 messages=[{"role": "user", "content": user_message}],
                 system=prompt,
                 max_tokens=4096,
+                temperature=0.0,
             )
             summary = response.text
         except anthropic.RateLimitError:
@@ -286,6 +287,7 @@ def preprocess_courses(data: dict,
                     messages=[{"role": "user", "content": user_message}],
                     system=prompt,
                     max_tokens=4096,
+                    temperature=0.0,
                 )
                 summary = response.text
             except anthropic.RateLimitError:
@@ -368,6 +370,7 @@ def route_question_to_courses(
             messages=[{"role": "user", "content": user_msg}],
             system=system,
             max_tokens=256,
+            temperature=0.0,
         )
         raw_json = response.text.strip()
         parsed = json.loads(raw_json)
