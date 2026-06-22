@@ -62,12 +62,12 @@ def _slugify(text: str) -> str:
 def _parse_confidence(raw: str) -> int:
     """
     Parse the confidence string to an int 1–5.
-    Returns 3 (neutral) if missing or unparseable.
+    Returns 2 (cautious) if missing or unparseable.
     """
     if not raw:
-        return 3
+        return 2
     m = re.search(r"[1-5]", raw)
-    return int(m.group()) if m else 3
+    return int(m.group()) if m else 2
 
 
 _ISO_TIME_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
@@ -226,10 +226,13 @@ def aggregate(preprocessed_path: Path) -> dict:
             entry["flag_reason"] = flag_reason
 
             # Bucketing: outside window → needs_attention regardless of confidence
-            # Otherwise: resolved = non-null date AND effective_confidence >= 3
+            # Otherwise: resolved = non-null date AND effective_confidence >= threshold
+            # (discussions/participation require >= 4; all other types require >= 3)
+            entry_type = entry.get("type") or ""
+            conf_threshold = 4 if entry_type.lower() in ("discussion", "participation") else 3
             if flag_reason == "outside_semester_window":
                 needs_attention_items.append(entry)
-            elif due_resolved is not None and effective_confidence >= 3:
+            elif due_resolved is not None and effective_confidence >= conf_threshold:
                 resolved_items.append(entry)
             else:
                 if due_resolved is None:
