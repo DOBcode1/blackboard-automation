@@ -93,6 +93,7 @@ def build_preprocess_prompt(semester_start: str, semester_end: str, term_name: s
         "  3 = inferred from 'Week N' with semester anchor\n"
         "  2 = inferred from context with some ambiguity\n"
         "  1 = best guess; user should verify\n"
+        "  EXPLICIT-DATE FLOOR: If the source text contains an explicit calendar date (a month and day, or a full date — e.g. 'April 8', 'February 25', '10/15'), score Confidence 4 or higher, EVEN IF the date is embedded in descriptive text or the item's label is vague. An explicit date present in the source is never Confidence 1 or 2. Reserve Confidence 2 and 1 ONLY for items where no explicit date appears and the date is genuinely inferred from 'Week N' or surrounding context.\n"
         "  Output as integer only, e.g. '**Confidence:** 4'\n\n"
         "2. COURSE SCHEDULE: Week-by-week or class-by-class topic breakdown if available\n\n"
         "3. MATERIAL MAP: For each assignment, list which course materials (readings, "
