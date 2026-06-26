@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Cost Dashboard — Internal</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #1a1a1a; margin: 0; padding: 24px; }
+    h1 { margin: 0 0 24px; font-size: 1.4rem; }
+    h2 { font-size: 1rem; margin: 32px 0 10px; color: #444; text-transform: uppercase; letter-spacing: .05em; }
+    .periods { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; }
+    .period-card {
+      background: #fff; border: 1px solid #ddd; border-radius: 8px;
+      padding: 18px 24px; min-width: 180px; flex: 1;
+    }
+    .period-card .label { font-size: .8rem; color: #666; margin-bottom: 6px; }
+    .period-card .cost  { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .period-card .calls { font-size: .85rem; color: #555; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; }
+    th { background: #f0f0f0; text-align: left; padding: 9px 12px; font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; color: #555; }
+    td { padding: 8px 12px; font-size: .9rem; border-top: 1px solid #eee; font-variant-numeric: tabular-nums; }
+    tr:hover td { background: #fafafa; }
+    .mono { font-family: monospace; font-size: .82rem; color: #333; }
+    .export-link { display: inline-block; margin-top: 32px; padding: 8px 16px; background: #1a1a1a; color: #fff; text-decoration: none; border-radius: 6px; font-size: .85rem; }
+    .export-link:hover { background: #333; }
+  </style>
+</head>
+<body>
+
+<h1>Cost Dashboard <span style="font-weight:400;color:#888;font-size:.9rem;">(internal)</span></h1>
+
+<!-- Period summary -->
+<div class="periods">
+  <div class="period-card">
+    <div class="label">Today</div>
+    <div class="cost">${{ "%.4f"|format(period.today.cost_usd) }}</div>
+    <div class="calls">{{ period.today.call_count }} call{{ 's' if period.today.call_count != 1 else '' }}</div>
+  </div>
+  <div class="period-card">
+    <div class="label">Last 7 days</div>
+    <div class="cost">${{ "%.4f"|format(period.last_7d.cost_usd) }}</div>
+    <div class="calls">{{ period.last_7d.call_count }} call{{ 's' if period.last_7d.call_count != 1 else '' }}</div>
+  </div>
+  <div class="period-card">
+    <div class="label">All time</div>
+    <div class="cost">${{ "%.4f"|format(period.all_time.cost_usd) }}</div>
+    <div class="calls">{{ period.all_time.call_count }} call{{ 's' if period.all_time.call_count != 1 else '' }}</div>
+  </div>
+</div>
+
+<!-- Cost by operation -->
+<h2>Cost by operation</h2>
+{% if by_operation %}
+<table>
+  <thead>
+    <tr>
+      <th>Operation</th>
+      <th>Calls</th>
+      <th>Input tokens</th>
+      <th>Output tokens</th>
+      <th>Total cost</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in by_operation %}
+    <tr>
+      <td class="mono">{{ row.operation }}</td>
+      <td>{{ "{:,}".format(row.call_count) }}</td>
+      <td>{{ "{:,}".format(row.total_input_tokens) }}</td>
+      <td>{{ "{:,}".format(row.total_output_tokens) }}</td>
+      <td>${{ "%.4f"|format(row.total_cost_usd) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:#888;font-size:.9rem;">No data yet.</p>
+{% endif %}
+
+<!-- Recent queries -->
+<h2>Recent queries (last 50)</h2>
+{% if by_query %}
+<table>
+  <thead>
+    <tr>
+      <th>Time (UTC)</th>
+      <th>Request ID</th>
+      <th>Operations</th>
+      <th>Calls</th>
+      <th>Input tokens</th>
+      <th>Output tokens</th>
+      <th>Total cost</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for q in by_query %}
+    <tr>
+      <td class="mono">{{ q.earliest_event_time[:19].replace("T"," ") }}</td>
+      <td class="mono" style="font-size:.75rem;">{{ q.request_id[:16] }}…</td>
+      <td class="mono">{{ q.operations | join(", ") }}</td>
+      <td>{{ q.call_count }}</td>
+      <td>{{ "{:,}".format(q.total_input_tokens) }}</td>
+      <td>{{ "{:,}".format(q.total_output_tokens) }}</td>
+      <td>${{ "%.4f"|format(q.total_cost_usd) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:#888;font-size:.9rem;">No data yet.</p>
+{% endif %}
+
+<!-- Top individual calls -->
+<h2>Most expensive individual calls (top 10)</h2>
+{% if top_calls %}
+<table>
+  <thead>
+    <tr>
+      <th>Time (UTC)</th>
+      <th>Operation</th>
+      <th>Model</th>
+      <th>Tier</th>
+      <th>Input tokens</th>
+      <th>Output tokens</th>
+      <th>Cost</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for c in top_calls %}
+    <tr>
+      <td class="mono">{{ c.event_time[:19].replace("T"," ") }}</td>
+      <td class="mono">{{ c.operation or "untagged" }}</td>
+      <td class="mono">{{ c.model }}</td>
+      <td>{{ c.tier }}</td>
+      <td>{{ "{:,}".format(c.input_tokens) }}</td>
+      <td>{{ "{:,}".format(c.output_tokens) }}</td>
+      <td>${{ "%.4f"|format(c.cost_usd) }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p style="color:#888;font-size:.9rem;">No data yet.</p>
+{% endif %}
+
+<a class="export-link" href="/admin/costs/export.csv">Download CSV</a>
+
+</body>
+</html>

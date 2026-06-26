@@ -5,6 +5,8 @@ Usage:
     python app.py output/content_text_20260514_084311.json
 """
 
+import csv
+import io
 import json
 import os
 import sys
@@ -12,10 +14,11 @@ import time
 import uuid
 from datetime import datetime, timezone
 
+import cost_helper
 import anthropic
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, Form, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
@@ -973,6 +976,40 @@ async def get_document_meta(doc_id: str):
         "mime_type": doc.get("mime_type"),
         "extracted_text": doc.get("extracted_text"),
     })
+
+
+# ---------------------------------------------------------------------------
+# Admin — internal only, not linked from user nav
+# ---------------------------------------------------------------------------
+
+@app.get("/admin/costs")
+async def admin_costs(request: Request):
+    return templates.TemplateResponse(request, "admin_costs.html", {
+        "period":       cost_helper.summarize_by_period(),
+        "by_operation": cost_helper.summarize_by_operation(),
+        "by_query":     cost_helper.group_by_query(limit=50),
+        "top_calls":    cost_helper.most_expensive_calls(limit=10),
+    })
+
+
+@app.get("/admin/costs/export.csv")
+async def admin_costs_csv():
+    rows = cost_helper.read_all()
+    columns = [
+        "event_time", "request_id", "operation", "tier", "model",
+        "input_tokens", "output_tokens", "cost_usd",
+        "thread_id", "user_id", "school_id", "event_id",
+    ]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({col: row.get(col, "") for col in columns})
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=cost_ledger.csv"},
+    )
 
 
 # ---------------------------------------------------------------------------
