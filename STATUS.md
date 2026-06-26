@@ -5,17 +5,22 @@ _Living status doc. Update at the end of each work session. For deep architectur
 ## What this is
 Blackboard Ultra content extraction + AI conversational query engine, heading toward a subscription product. Free Fordham beta first. Solo non-technical founder; Claude Code (Sonnet) executes, planning done in chat. Windows/PowerShell.
 
-## Current state (updated 2026-06-12)
+## Current state (updated 2026-06-26)
+- P2 calendar-stabilization chunk — DONE: preprocessing truncation fix (max_tokens 4096->8192, Legal Framework now finishes at out=5034), type-scoped confidence threshold (discussion/participation require conf >= 4), explicit-date confidence floor added to preprocessing rubric (committed, verification deferred to next genuine re-scrape). Calendar count stabilized at 57. Full detail in Known Issues below.
 - Phase 7 Stage A (RAG pipeline) — DONE: llm_adapter, ingestion, chunking, embeddings (local fastembed), retrieval, query.build_context.
 - Phase 7 Stage B (uploads + attachments) — DONE: file/vision extractors, sync + async upload endpoints, full attachment workflow (attach as part of a message, send with/without text, auto-summary + course classification on a bare file, click-to-preview with inline PDF/image + download, draft persistence across reload, send blocked while a file is still reading, user message saved before generation so it survives a mid-stream reload).
 - Repo housekeeping — DONE: requirements.txt pinned + clean-install verified, scratch file removed, dead notion/ integration deleted, README structure + priorities updated.
 
-## Immediately next
-- Stage D — decouple course summaries from the overrides system; move summaries into retrieval instead of injecting them wholesale. Mechanism (on-demand vs stored-and-retrieved) still TO BE DESIGNED — the trap is preserving the USER-CONFIRMED OVERRIDES authority. Good candidate for a focused design pass.
-- Phase 9 — operational maturity: structured logging (replace prints), per-call token tracking, retry/backoff on streaming, first tests for ingestion + retrieval.
-- Regression check after chunking migration — Verify on the current codebase that behavior observed on the older architecture still holds: weight-aggregation answers (e.g. "10% shared across all 10 Operations chapter assignments"), extraction of obscure one-line-in-syllabus assignments, multi-part exam grouping (Legal final Parts 1/2/3 consolidated), and correct routing of ungraded items to needs-attention. Run the current code twice on the same machine — the second run doubles as the controlled same-machine non-determinism observation (see preprocessing non-determinism note in Known Issues below).
-- Phase 9.5 — announcement scraping (student-visible, no copyright issue).
-- Fordham IT outreach (parallel, longest lead time) — register Anthology developer account, then contact Kanchan Thaokar (Sr. Manager Enterprise Learning Systems). NOT yet sent. Unblocks the Phase 10 auth path.
+## Immediately next (priority order follows README "Things to work on now" — canonical tie-breaker)
+- **P1 — Instrument it (IN PROGRESS).** The trimmed core of Phase 9, pulled ahead because stress testing is pointless without observability. Structured logging starting in llm_adapter.py (the chokepoint every LLM call flows through), per-call token + cost tracking INCLUDING the streaming chat call (streaming usage is currently discarded — known gap), retry/backoff on stream open. **Current task: cost dashboard** (/admin/costs view) as the visible first slice.
+- **P2 — Break it on purpose (PARTIALLY DONE — parked).** Calendar-stabilization chunk landed (see Current state above). REMAINING: the 10-15 synthetic worst-case input corpus, override-ID fragility test (simulated title change orphaning a user correction), markdown format-drift test (Sonnet drifting from the exact ### / **Name:** / **Due Date Resolved:** format silently drops items), plus the post-chunking regression check (weight-aggregation answers, obscure one-line syllabus assignments, multi-part exam grouping, ungraded-item routing). Resume after P1.
+- **P3 — Today view.** Decision-first landing page, ranked by urgency x confidence. Ships AFTER P1/P2 — a Today view built on un-stress-tested extraction is just a confident display of possibly-wrong dates.
+- **P4 — Micro-beta (2-3 friends).** Real accounts, real messy data. Unblocks the three parked scraper bugs (finally a second Blackboard account).
+
+## Deferred per README — do NOT pull forward
+- **Stage D** (decouple course summaries from overrides) — design pass only; build deferred until after P4 unless stress testing forces it earlier.
+- **Phase 9 remainder** (beyond P1's trimmed core) and **Phase 9.5** (announcement scraping) — after the micro-beta proves the core generalizes.
+- **Fordham IT outreach + Anthology developer account** — STRATEGY CHANGED: deferred until after P4. Arriving with proven traction and real usage data beats asking permission before anything is built. Do NOT send the email yet; do NOT register the developer account yet.
 
 ## On hold / blocked
 - Stage C (OCR backfill of publisher materials) — on hold pending attorney review (copyright). Publisher-owned content (e.g. Cengage decks) currently in corpus is a known exposure.
