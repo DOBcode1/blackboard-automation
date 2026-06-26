@@ -346,6 +346,9 @@ def build_course_map(data: dict) -> dict[str, str]:
 def route_question_to_courses(
     question: str,
     course_map: dict[str, str],
+    request_id: str | None = None,
+    operation: str | None = None,
+    thread_id: str | None = None,
 ) -> list[str]:
     """
     Use Haiku to determine which course_ids are relevant to the question.
@@ -372,6 +375,9 @@ def route_question_to_courses(
             system=system,
             max_tokens=256,
             temperature=0.0,
+            operation=operation,
+            thread_id=thread_id,
+            request_id=request_id,
         )
         raw_json = response.text.strip()
         parsed = json.loads(raw_json)

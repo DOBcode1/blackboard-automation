@@ -126,7 +126,8 @@ def _stream_chunks(model: str, messages: list, system: str | None, max_tokens: i
                    temperature: float | None = None,
                    tier: str = "main",
                    operation: str | None = None,
-                   thread_id: str | None = None) -> Generator[str, None, None]:
+                   thread_id: str | None = None,
+                   request_id: str | None = None) -> Generator[str, None, None]:
     """Yield text chunks from a streaming messages call; capture usage if available."""
     kwargs = _build_kwargs(model, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
@@ -142,14 +143,14 @@ def _stream_chunks(model: str, messages: list, system: str | None, max_tokens: i
                 model=model, tier=tier,
                 input_tokens=usage.get("input_tokens", 0),
                 output_tokens=usage.get("output_tokens", 0),
-                operation=operation, thread_id=thread_id,
+                operation=operation, thread_id=thread_id, request_id=request_id,
             )
         except Exception as exc:
             logger.warning("get_final_message failed — stream usage not captured: %s", exc)
             cost_helper.log_call(
                 model=model, tier=tier,
                 input_tokens=0, output_tokens=0,
-                operation=operation, thread_id=thread_id,
+                operation=operation, thread_id=thread_id, request_id=request_id,
             )
 
 
@@ -165,11 +166,13 @@ def call_fast(
     temperature: float | None = None,
     operation: str | None = None,
     thread_id: str | None = None,
+    request_id: str | None = None,
 ) -> LLMResult | Generator[str, None, None]:
     """Route to the fast (Haiku) model. Returns LLMResult or a text-chunk generator."""
     if stream:
         return _stream_chunks(MODEL_FAST, messages, system, max_tokens, temperature,
-                              tier="fast", operation=operation, thread_id=thread_id)
+                              tier="fast", operation=operation, thread_id=thread_id,
+                              request_id=request_id)
     kwargs = _build_kwargs(MODEL_FAST, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
@@ -180,7 +183,7 @@ def call_fast(
         model=MODEL_FAST, tier="fast",
         input_tokens=result.usage.get("input_tokens", 0),
         output_tokens=result.usage.get("output_tokens", 0),
-        operation=operation, thread_id=thread_id,
+        operation=operation, thread_id=thread_id, request_id=request_id,
     )
     return result
 
@@ -193,11 +196,13 @@ def call_main(
     temperature: float | None = None,
     operation: str | None = None,
     thread_id: str | None = None,
+    request_id: str | None = None,
 ) -> LLMResult | Generator[str, None, None]:
     """Route to the main (Sonnet) model. Returns LLMResult or a text-chunk generator."""
     if stream:
         return _stream_chunks(MODEL_MAIN, messages, system, max_tokens, temperature,
-                              tier="main", operation=operation, thread_id=thread_id)
+                              tier="main", operation=operation, thread_id=thread_id,
+                              request_id=request_id)
     kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
@@ -208,7 +213,7 @@ def call_main(
         model=MODEL_MAIN, tier="main",
         input_tokens=result.usage.get("input_tokens", 0),
         output_tokens=result.usage.get("output_tokens", 0),
-        operation=operation, thread_id=thread_id,
+        operation=operation, thread_id=thread_id, request_id=request_id,
     )
     return result
 
@@ -220,6 +225,7 @@ def call_vision(
     temperature: float | None = None,
     operation: str | None = None,
     thread_id: str | None = None,
+    request_id: str | None = None,
 ) -> LLMResult:
     """Route to the main (Sonnet) model; messages may contain image content blocks."""
     kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens, temperature)
@@ -232,7 +238,7 @@ def call_vision(
         model=MODEL_MAIN, tier="vision",
         input_tokens=result.usage.get("input_tokens", 0),
         output_tokens=result.usage.get("output_tokens", 0),
-        operation=operation, thread_id=thread_id,
+        operation=operation, thread_id=thread_id, request_id=request_id,
     )
     return result
 

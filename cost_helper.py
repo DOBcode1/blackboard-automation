@@ -43,6 +43,7 @@ def log_call(
     output_tokens: int,
     operation: str | None = None,
     thread_id: str | None = None,
+    request_id: str | None = None,
     path: Path = _DEFAULT_PATH,
 ) -> None:
     """
@@ -53,7 +54,7 @@ def log_call(
     try:
         row = {
             "event_id":      str(uuid.uuid4()),
-            "request_id":    str(uuid.uuid4()),
+            "request_id":    request_id if request_id is not None else str(uuid.uuid4()),
             "event_time":    datetime.now(timezone.utc).isoformat(),
             "user_id":       "local_dev",
             "school_id":     "fordham",

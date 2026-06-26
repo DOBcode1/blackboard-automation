@@ -653,6 +653,7 @@ async def chat(req: ChatRequest):
     question = req.message
     api_history = req.history
     req_thread_id = req.thread_id
+    request_id = str(uuid.uuid4())
 
     is_attachment_summary = not question.strip() and bool(req.attachments)
     question_for_model = (
@@ -663,7 +664,12 @@ async def chat(req: ChatRequest):
     if is_attachment_summary:
         matched_ids = list(_course_map.keys())
     else:
-        matched_ids = route_question_to_courses(question, _course_map)
+        matched_ids = route_question_to_courses(
+            question, _course_map,
+            request_id=request_id,
+            operation="routing",
+            thread_id=req_thread_id,
+        )
 
     if len(matched_ids) == len(_course_map):
         context_label = "all courses"
@@ -746,7 +752,12 @@ async def chat(req: ChatRequest):
         yield f"data: {meta}\n\n"
 
         try:
-            for text in call_main(messages=messages, system=SYSTEM_PROMPT, max_tokens=4096, stream=True):
+            for text in call_main(
+                messages=messages, system=SYSTEM_PROMPT, max_tokens=4096, stream=True,
+                operation="chat_generation",
+                thread_id=thread_id,
+                request_id=request_id,
+            ):
                 full_parts.append(text)
                 payload = json.dumps({"text": text})
                 yield f"data: {payload}\n\n"
