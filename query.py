@@ -278,6 +278,7 @@ def preprocess_courses(data: dict,
                 system=prompt,
                 max_tokens=8192,
                 temperature=0.0,
+                operation="preprocessing",
             )
             summary = response.text
         except anthropic.RateLimitError:
@@ -289,6 +290,7 @@ def preprocess_courses(data: dict,
                     system=prompt,
                     max_tokens=8192,
                     temperature=0.0,
+                    operation="preprocessing",
                 )
                 summary = response.text
             except anthropic.RateLimitError:
@@ -720,7 +722,8 @@ def ask(history: list[dict],
     full_response = ""
     print("\nAssistant: ", end="", flush=True)
 
-    for text in call_main(messages=history, system=SYSTEM_PROMPT, max_tokens=4096, stream=True):
+    for text in call_main(messages=history, system=SYSTEM_PROMPT, max_tokens=4096, stream=True,
+                          operation="cli_chat"):
         print(text, end="", flush=True)
         full_response += text
 

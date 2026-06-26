@@ -217,7 +217,7 @@ def extract_text_via_vision(
                 ],
             }
         ]
-        result = call_vision(messages, system=_VISION_SYSTEM)
+        result = call_vision(messages, system=_VISION_SYSTEM, operation="vision_ocr")
         text = result.text.strip()
         return (text or None, "vision_ocr", 4)
 
@@ -263,7 +263,7 @@ def extract_text_via_vision(
                         ],
                     }
                 ]
-                result = call_vision(messages, system=_VISION_SYSTEM)
+                result = call_vision(messages, system=_VISION_SYSTEM, operation="vision_ocr")
                 page_text = result.text.strip()
                 if page_text:
                     page_texts.append(page_text)
