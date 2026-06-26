@@ -7,6 +7,7 @@ import os
 import time
 import anthropic
 from logging_setup import get_logger
+import cost_helper
 
 from dataclasses import dataclass, field
 from typing import Generator
@@ -25,29 +26,15 @@ EMBEDDING_DIM = 384
 # ---------------------------------------------------------------------------
 logger = get_logger("llm_adapter")
 
-# ---------------------------------------------------------------------------
-# Pricing table — (input_$/M, output_$/M)
-# ---------------------------------------------------------------------------
-_PRICING: dict[str, tuple[float, float]] = {
-    MODEL_FAST: (1.0, 5.0),
-    MODEL_MAIN: (3.0, 15.0),
-}
-
-
-def _compute_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    if model not in _PRICING:
-        logger.warning("no pricing entry for model=%s — cost unknown", model)
-        return None
-    in_rate, out_rate = _PRICING[model]
-    return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
-
-
 def _log_call(model: str, usage: dict, duration_ms: float) -> None:
     try:
         in_tok = usage.get("input_tokens", 0)
         out_tok = usage.get("output_tokens", 0)
-        cost = _compute_cost(model, in_tok, out_tok)
-        cost_str = f"${cost:.6f}" if cost is not None else "unknown"
+        if model in cost_helper.PRICING:
+            cost_str = f"${cost_helper.compute_cost(model, in_tok, out_tok):.6f}"
+        else:
+            logger.warning("no pricing entry for model=%s — cost unknown", model)
+            cost_str = "unknown"
         logger.info("model=%s in=%d out=%d cost=%s dur=%dms", model, in_tok, out_tok, cost_str, round(duration_ms))
     except Exception:
         pass
@@ -136,7 +123,10 @@ def _collect_text(response) -> str:
 
 
 def _stream_chunks(model: str, messages: list, system: str | None, max_tokens: int,
-                   temperature: float | None = None) -> Generator[str, None, None]:
+                   temperature: float | None = None,
+                   tier: str = "main",
+                   operation: str | None = None,
+                   thread_id: str | None = None) -> Generator[str, None, None]:
     """Yield text chunks from a streaming messages call; capture usage if available."""
     kwargs = _build_kwargs(model, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
@@ -146,9 +136,21 @@ def _stream_chunks(model: str, messages: list, system: str | None, max_tokens: i
         dur = (time.perf_counter() - t0) * 1000
         try:
             final = stream.get_final_message()
-            _log_call(model, _extract_usage(final), dur)
+            usage = _extract_usage(final)
+            _log_call(model, usage, dur)
+            cost_helper.log_call(
+                model=model, tier=tier,
+                input_tokens=usage.get("input_tokens", 0),
+                output_tokens=usage.get("output_tokens", 0),
+                operation=operation, thread_id=thread_id,
+            )
         except Exception as exc:
             logger.warning("get_final_message failed — stream usage not captured: %s", exc)
+            cost_helper.log_call(
+                model=model, tier=tier,
+                input_tokens=0, output_tokens=0,
+                operation=operation, thread_id=thread_id,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -161,16 +163,25 @@ def call_fast(
     max_tokens: int = 1024,
     stream: bool = False,
     temperature: float | None = None,
+    operation: str | None = None,
+    thread_id: str | None = None,
 ) -> LLMResult | Generator[str, None, None]:
     """Route to the fast (Haiku) model. Returns LLMResult or a text-chunk generator."""
     if stream:
-        return _stream_chunks(MODEL_FAST, messages, system, max_tokens, temperature)
+        return _stream_chunks(MODEL_FAST, messages, system, max_tokens, temperature,
+                              tier="fast", operation=operation, thread_id=thread_id)
     kwargs = _build_kwargs(MODEL_FAST, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
     dur = (time.perf_counter() - t0) * 1000
     result = LLMResult(text=_collect_text(response), usage=_extract_usage(response))
     _log_call(MODEL_FAST, result.usage, dur)
+    cost_helper.log_call(
+        model=MODEL_FAST, tier="fast",
+        input_tokens=result.usage.get("input_tokens", 0),
+        output_tokens=result.usage.get("output_tokens", 0),
+        operation=operation, thread_id=thread_id,
+    )
     return result
 
 
@@ -180,16 +191,25 @@ def call_main(
     max_tokens: int = 4096,
     stream: bool = False,
     temperature: float | None = None,
+    operation: str | None = None,
+    thread_id: str | None = None,
 ) -> LLMResult | Generator[str, None, None]:
     """Route to the main (Sonnet) model. Returns LLMResult or a text-chunk generator."""
     if stream:
-        return _stream_chunks(MODEL_MAIN, messages, system, max_tokens, temperature)
+        return _stream_chunks(MODEL_MAIN, messages, system, max_tokens, temperature,
+                              tier="main", operation=operation, thread_id=thread_id)
     kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens, temperature)
     t0 = time.perf_counter()
     response = _with_retry(_get_client().messages.create, **kwargs)
     dur = (time.perf_counter() - t0) * 1000
     result = LLMResult(text=_collect_text(response), usage=_extract_usage(response))
     _log_call(MODEL_MAIN, result.usage, dur)
+    cost_helper.log_call(
+        model=MODEL_MAIN, tier="main",
+        input_tokens=result.usage.get("input_tokens", 0),
+        output_tokens=result.usage.get("output_tokens", 0),
+        operation=operation, thread_id=thread_id,
+    )
     return result
 
 
@@ -198,6 +218,8 @@ def call_vision(
     system: str | None = None,
     max_tokens: int = 4096,
     temperature: float | None = None,
+    operation: str | None = None,
+    thread_id: str | None = None,
 ) -> LLMResult:
     """Route to the main (Sonnet) model; messages may contain image content blocks."""
     kwargs = _build_kwargs(MODEL_MAIN, messages, system, max_tokens, temperature)
@@ -206,6 +228,12 @@ def call_vision(
     dur = (time.perf_counter() - t0) * 1000
     result = LLMResult(text=_collect_text(response), usage=_extract_usage(response))
     _log_call(MODEL_MAIN, result.usage, dur)
+    cost_helper.log_call(
+        model=MODEL_MAIN, tier="vision",
+        input_tokens=result.usage.get("input_tokens", 0),
+        output_tokens=result.usage.get("output_tokens", 0),
+        operation=operation, thread_id=thread_id,
+    )
     return result
 
 

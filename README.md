@@ -259,6 +259,7 @@ The trimmed core of Phase 9, pulled forward because stress testing is pointless 
 - Structured logging replacing `print()` throughout — starting in `llm_adapter.py`, the chokepoint every LLM call flows through, then spreading outward
 - Per-call token and cost tracking *including streaming calls* — streaming usage is currently discarded, a known gap
 - Retry/backoff on streaming calls — the existing retry wrapper doesn't cover stream open
+- Cost dashboard (/admin/costs, internal-only — never ships in the user frontend): spend today/week/all-time, operation-breakdown chart, recent-query cost feed, most-expensive-operations list, and a one-click CSV export button (JSONL ledger -> CSV download) for pulling data into a spreadsheet on demand. Built on the cost_helper.py JSONL ledger; same rows load into the Phase 10 cost_ledger Postgres table unchanged.
 
 *Deferred from Phase 9 for now:* performance budgets and documentation polish.
 
